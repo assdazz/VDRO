@@ -1,0 +1,27 @@
+node_modules/
+out/
+dist/
+release/
+.npm-cache/
+.electron-cache/
+.fixtures/
+.userdata/
+.zoom-analysis/
+
+# Local Electron runtime copy (rebuilt from node_modules/electron by launcher)
+runtime/
+
+# Machine-specific / local build artifacts
+.npmrc
+*.exe
+*.log
+*.zh-jsx-strings.txt
+*.zh-ui-strings.txt
+zoom-analysis.png
+
+# Media files
+*.mp4
+*.wav
+*.mp3
+*.m4a
+*.flac

@@ -1,0 +1,46 @@
+appId: top.vdro.app
+productName: VDRO
+copyright: Copyright (c) 2026 VDRO
+
+directories:
+  output: release
+  buildResources: assets
+
+electronDist: runtime
+
+files:
+  - out/**/*
+  - package.json
+
+asar: true
+npmRebuild: false
+asarUnpack:
+  - node_modules/ffmpeg-static/**
+  - node_modules/@ffprobe-installer/**
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: assets/vdro.ico
+  executableName: VDRO
+  artifactName: VDRO安装程序-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  selectPerMachineByDefault: false
+  allowElevation: false
+  allowToChangeInstallationDirectory: true
+  differentialPackage: false
+  useZip: true
+  include: build/installer.nsh
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: VDRO
+  installerIcon: assets/vdro.ico
+  uninstallerIcon: assets/vdro.ico
+  uninstallDisplayName: VDRO卸载程序
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
