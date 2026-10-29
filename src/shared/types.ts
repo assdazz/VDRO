@@ -102,7 +102,7 @@ export interface ExportCancelled {
 }
 
 export type AccentColor = 'yellow' | 'blue' | 'green' | 'purple'
-export type ThemeMode = 'dark' | 'oled' | 'light' | 'acrylic'
+export type ThemeMode = 'dark' | 'oled' | 'acrylic'
 export type MaterialColor = 'blue' | 'violet' | 'teal' | 'rose' | 'amber' | 'graphite'
 export type SaveMode = 'ask' | 'fixed'
 export type PreviewResolutionSetting = 'follow' | 360 | 480 | 720 | 1080 | 1440 | 2160

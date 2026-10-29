@@ -178,7 +178,7 @@ export function sanitizeSettings(input: unknown): AppSettings {
         : DEFAULT_SETTINGS.sidebarCollapsed,
     theme: oneOf<ThemeMode>(
       value.theme,
-      ['dark', 'oled', 'light', 'acrylic'],
+      ['dark', 'oled', 'acrylic'],
       DEFAULT_SETTINGS.theme,
     ),
     materialColor: oneOf<MaterialColor>(

@@ -40,7 +40,7 @@ Click the gear icon at the top-right. The settings cover:
 
 - output defaults: format, quality, sample rate, channels, saving mode, filename template
 - preview defaults: resolution, frame rate, skip duration, loop, extracted-video sync
-- interface: dark/OLED/light/acrylic themes, six material tint colors, optional translucent window, accent color, UI scale, layout/sidebar restore
+- interface: dark/OLED/acrylic themes, six material tint colors, optional translucent window, accent color, UI scale, layout/sidebar restore
 - data: delete confirmations, temporary-file cleanup, waveform-cache limit/cleanup, material-library/extracted-audio persistence
 - shortcuts: play, set-in, set-out, seek back/forward
 - reset layout, clear temporary files/waveform cache, and reset all settings
@@ -62,6 +62,10 @@ The launcher builds once via a C# compiler and starts the runtime with
 workspace drives. `start-vdro.cmd` is a fallback that builds (if needed) and
 launches the same `VDRO.exe`. For users on this drive, install once with
 `npm install`; the portable runtime is already in `runtime\`.
+
+## Version 1.2.2
+
+See [release notes](docs/release-1.2.2.md) for startup and waveform-selection improvements.
 
 ## Installed build
 

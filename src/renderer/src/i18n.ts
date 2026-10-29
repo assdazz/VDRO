@@ -34,7 +34,6 @@ const EN: Record<string, string> = {
   '主题颜色': 'Theme color',
   '深色': 'Dark',
   '纯黑': 'OLED black',
-  '白天': 'Light',
   '亚克力': 'Acrylic',
   '紫罗兰': 'Violet',
   '青绿': 'Teal',

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { CSSProperties, DragEvent, JSX, PointerEvent as ReactPointerEvent } from 'react'
 import { createPortal } from 'react-dom'
 import WaveSurfer from 'wavesurfer.js'
@@ -18,7 +18,9 @@ import type {
 } from '@shared/types'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { translateDom, translateUiText } from './i18n'
-import { SettingsDialog } from './SettingsDialog'
+const SettingsDialog = lazy(() => import('./SettingsDialog').then((module) => ({
+  default: module.SettingsDialog,
+})))
 
 interface RegionLike {
   start: number
@@ -68,7 +70,7 @@ const WORKSPACE_VERTICAL_PADDING = 16
 const MIN_VIDEO_AREA_HEIGHT =
   MIN_VIDEO_PREVIEW_HEIGHT + WORKSPACE_VERTICAL_PADDING
 const PANEL_RESIZER_HEIGHT = 18
-const FIXED_AUDIO_HEIGHT = 180
+const FIXED_AUDIO_HEIGHT = 268
 const AUDIO_COLLAPSED_HEIGHT = 48
 const AUDIO_EXPAND_DELTA = FIXED_AUDIO_HEIGHT - AUDIO_COLLAPSED_HEIGHT
 const PREVIEW_COLLAPSED_HEIGHT = 60
@@ -194,6 +196,7 @@ function rememberPeaks(
 export default function App(): JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null)
   const waveRef = useRef<HTMLDivElement>(null)
+  const dragBoxRef = useRef<HTMLDivElement>(null)
   const waveSurferRef = useRef<WaveSurfer | null>(null)
   const regionRef = useRef<RegionLike | null>(null)
   const regionRangeRef = useRef<RegionRange>({ start: 0, end: 0 })
@@ -671,19 +674,41 @@ export default function App(): JSX.Element {
       barRadius: 0,
       normalize: true,
       interact: true,
-      dragToSeek: true,
+      dragToSeek: false,
       autoScroll: false,
       autoCenter: false,
       hideScrollbar: true,
     })
 
     const regions = waveSurfer.registerPlugin(RegionsPlugin.create())
-    regions.enableDragSelection({ color: 'rgba(250,255,105,0.10)' })
+    // 不用 enableDragSelection：选区元素自己会 preventDefault 掉 pointermove，
+    // 在已有选区内部按下就拖不出新范围。框选走下面的自定义手势。
 
     const handleRegion = (next: RegionLike): void => {
       regionRef.current = next
       syncRegion({ start: next.start, end: next.end })
     }
+
+    // 两端手柄自己就是 resize，别让它冒泡到外层触发"拖出新选区"，否则一次拖动两头打架。
+    const bindRegionHandles = (next: RegionLike): void => {
+      const element = (next as unknown as { element?: HTMLElement | null }).element
+      if (!element) return
+      for (const handle of element.querySelectorAll<HTMLElement>('[part*="region-handle"]')) {
+        if (handle.dataset.vdroHandleBound === '1') continue
+        handle.dataset.vdroHandleBound = '1'
+        handle.addEventListener('pointerdown', (event) => event.stopPropagation())
+      }
+    }
+
+    // 拖动过程中实时更新起止时间读数，一帧一次，避免每个 pointermove 都 setState。
+    let pendingFrame = 0
+    regions.on('region-update', (next) => {
+      if (pendingFrame) return
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = 0
+        syncRegion({ start: next.start, end: next.end })
+      })
+    })
 
     regions.on('region-created', (next) => {
       for (const other of regions.getRegions()) {
@@ -691,12 +716,151 @@ export default function App(): JSX.Element {
           setTimeout(() => other.remove(), 0)
         }
       }
+      bindRegionHandles(next)
       handleRegion(next)
     })
     regions.on('region-updated', (next) => {
       setActiveExtractedClip(null)
+      bindRegionHandles(next)
       handleRegion(next)
     })
+
+    // 框选手势：在波形任意位置按住拖动就重画选区，选区内部同样有效。
+    // 拖动过程只画一层预览框，松手才真正建选区——不逐帧改插件实例，避免
+    // 选区对象被替换后 setOptions 静默失效。
+    const wrapper = waveSurfer.getWrapper()
+    const dragBox = dragBoxRef.current
+    const pxPerSecond = (): number => {
+      const total = waveSurfer.getDuration()
+      if (total <= 0) return 0
+      return wrapper.getBoundingClientRect().width / total
+    }
+    const timeAtX = (clientX: number): number => {
+      const rect = wrapper.getBoundingClientRect()
+      const pxPerSec = pxPerSecond()
+      if (pxPerSec <= 0) return 0
+      return Math.min(Math.max((clientX - rect.left) / pxPerSec, 0), waveSurfer.getDuration())
+    }
+    const isRegionHandleEvent = (event: PointerEvent): boolean =>
+      event.composedPath().some((node) => {
+        if (!(node instanceof Element)) return false
+        return (node.getAttribute('part') ?? '').includes('region-handle')
+      })
+
+    let dragOriginX: number | null = null
+    let dragOriginTime = 0
+    let dragPxPerSec = 0
+    let dragRectLeft = 0
+    let dragActive = false
+    let dragScrollAnchor = 0
+    let suppressClickUntil = 0
+    let selectionPointerId: number | null = null
+    let previousRange: RegionRange | null = null
+
+    const resetSelection = (): void => {
+      const pointerId = selectionPointerId
+      selectionPointerId = null
+      if (pointerId !== null && container.hasPointerCapture(pointerId)) {
+        container.releasePointerCapture(pointerId)
+      }
+      if (dragBox) dragBox.hidden = true
+      container.classList.remove('is-selecting')
+      dragOriginX = null
+      dragActive = false
+      previousRange = null
+    }
+
+    const rangeFrom = (clientX: number): { start: number; end: number } => {
+      const offset = dragPxPerSec > 0 ? (clientX - dragOriginX!) / dragPxPerSec : 0
+      const total = waveSurfer.getDuration()
+      const current = Math.min(Math.max(dragOriginTime + offset, 0), total)
+      return { start: Math.min(dragOriginTime, current), end: Math.max(dragOriginTime, current) }
+    }
+
+    const onSelectPointerDown = (event: PointerEvent): void => {
+      if (event.button !== 0 || !event.isPrimary || selectionPointerId !== null || isRegionHandleEvent(event)) return
+      selectionPointerId = event.pointerId
+      previousRange = { ...regionRangeRef.current }
+      dragOriginX = event.clientX
+      dragOriginTime = timeAtX(event.clientX)
+      dragPxPerSec = pxPerSecond()
+      dragRectLeft = container.getBoundingClientRect().left
+      dragScrollAnchor = waveSurfer.getScroll()
+      dragActive = false
+      if (dragBox) dragBox.hidden = true
+    }
+    const onSelectPointerMove = (event: PointerEvent): void => {
+      if (dragOriginX === null || event.pointerId !== selectionPointerId) return
+      const deltaX = event.clientX - dragOriginX
+      if (!dragActive && Math.abs(deltaX) < 4) return
+      // Capture only once dragging starts so a simple click still seeks normally.
+      if (!dragActive) container.setPointerCapture(event.pointerId)
+      dragActive = true
+      event.preventDefault()
+      event.stopPropagation()
+      container.classList.add('is-selecting')
+      const { start, end } = rangeFrom(event.clientX)
+      if (dragBox) {
+        dragBox.hidden = false
+        const originX = wrapper.getBoundingClientRect().left
+        dragBox.style.left = `${originX + start * dragPxPerSec - dragRectLeft}px`
+        dragBox.style.width = `${(end - start) * dragPxPerSec}px`
+      }
+      if (end - start >= 0.02) syncRegion({ start, end })
+      // 拖动只画选区，视图不许跟着滚，否则波形看着像被"拖小"了。
+      if (waveSurfer.getScroll() !== dragScrollAnchor) {
+        try {
+          waveSurfer.setScroll(dragScrollAnchor)
+        } catch {
+          // 滚动锁定失败不影响框选本身。
+        }
+      }
+    }
+    const onSelectPointerUp = (event: PointerEvent): void => {
+      if (event.pointerId !== selectionPointerId) return
+      if (dragActive && dragOriginX !== null) {
+        event.preventDefault()
+        event.stopPropagation()
+        // 拖完那一下不要顺手把播放头 seek 到松手位置。
+        suppressClickUntil = Date.now() + 400
+        setActiveExtractedClip(null)
+        const range = rangeFrom(event.clientX)
+        if (range.end - range.start >= 0.02) {
+          regions.addRegion({
+            start: range.start,
+            end: range.end,
+            color: 'rgba(250,255,105,0.10)',
+            drag: false,
+            resize: true,
+          })
+        } else if (previousRange) {
+          syncRegion(previousRange)
+        }
+      }
+      resetSelection()
+    }
+    const onSelectCancel = (event?: PointerEvent): void => {
+      if (selectionPointerId === null || (event && event.pointerId !== selectionPointerId)) return
+      if (dragActive) {
+        suppressClickUntil = Date.now() + 400
+        if (previousRange) syncRegion(previousRange)
+      }
+      resetSelection()
+    }
+    const onSelectBlur = (): void => onSelectCancel()
+    const onSelectClickCapture = (event: MouseEvent): void => {
+      if (Date.now() > suppressClickUntil) return
+      event.stopPropagation()
+      event.preventDefault()
+    }
+
+    container.addEventListener('pointerdown', onSelectPointerDown, true)
+    window.addEventListener('pointermove', onSelectPointerMove, true)
+    window.addEventListener('pointerup', onSelectPointerUp, true)
+    window.addEventListener('pointercancel', onSelectCancel, true)
+    container.addEventListener('lostpointercapture', onSelectCancel)
+    window.addEventListener('blur', onSelectBlur)
+    container.addEventListener('click', onSelectClickCapture, true)
 
     waveSurfer.on('ready', () => {
       if (regions.getRegions().length === 0) {
@@ -705,9 +869,10 @@ export default function App(): JSX.Element {
           start: 0,
           end,
           color: 'rgba(250,255,105,0.10)',
-          drag: true,
+          drag: false,
           resize: true,
         })
+        bindRegionHandles(initial)
         handleRegion(initial)
       }
 
@@ -751,6 +916,15 @@ export default function App(): JSX.Element {
 
     waveSurferRef.current = waveSurfer
     return () => {
+      if (pendingFrame) cancelAnimationFrame(pendingFrame)
+      container.removeEventListener('pointerdown', onSelectPointerDown, true)
+      window.removeEventListener('pointermove', onSelectPointerMove, true)
+      window.removeEventListener('pointerup', onSelectPointerUp, true)
+      window.removeEventListener('pointercancel', onSelectCancel, true)
+      container.removeEventListener('lostpointercapture', onSelectCancel)
+      window.removeEventListener('blur', onSelectBlur)
+      resetSelection()
+      container.removeEventListener('click', onSelectClickCapture, true)
       resizeObserver.disconnect()
       waveSurfer.destroy()
       waveSurferRef.current = null
@@ -2739,7 +2913,7 @@ export default function App(): JSX.Element {
                 </button>
                 <span className="panel-title-text">音频预览</span>
                 <span className="timeline-note">
-                  {media ? '拖动波形创建选区 · 拖两端调整' : '等待媒体'}
+                  {media ? '按住左键拖动框选 · 拖两端微调' : '等待媒体'}
                 </span>
               </div>
               {!layout.timelineCollapsed && <div className="timeline-actions">
@@ -2802,6 +2976,7 @@ export default function App(): JSX.Element {
                   <span className="eyebrow">此处显示波形图</span>
                 </div>
               )}
+              <div ref={dragBoxRef} className="drag-box" hidden />
               {media && !peaks && !loading && (
                 <div className="waveform-status">波形尚未生成</div>
               )}
@@ -3280,6 +3455,7 @@ export default function App(): JSX.Element {
       )}
 
       {settingsOpen && (
+        <Suspense fallback={null}>
         <SettingsDialog
           settings={settings}
           appInfo={appInfo}
@@ -3292,6 +3468,7 @@ export default function App(): JSX.Element {
           onChooseDirectory={chooseSaveDirectory}
           onOpenDataFolder={openDataFolder}
         />
+        </Suspense>
       )}
 
       {dragging && (

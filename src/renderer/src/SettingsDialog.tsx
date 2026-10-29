@@ -515,7 +515,6 @@ export function SettingsDialog({
                 >
                   <option value="dark">深色</option>
                   <option value="oled">纯黑</option>
-                  <option value="light">白天</option>
                   <option value="acrylic">亚克力</option>
                 </SelectRow>
                 {settings.theme === 'acrylic' && (

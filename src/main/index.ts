@@ -12,6 +12,13 @@ import { cleanupExtractedByPolicy, cleanupExtractedOrphans, clearExtractedFiles 
 import { attachWindowStatePersistence, loadWindowState } from './windowState'
 import type { AppSettings } from '../shared/types'
 
+// Include Electron's time before evaluating this entry point in the measurement.
+const startupStartedAt = Date.now() - process.uptime() * 1000
+function logStartup(stage: string): void {
+  const line = `${new Date().toISOString()} pid=${process.pid} ${stage} ${Math.round(Date.now() - startupStartedAt)}ms\n`
+  void fs.appendFile(path.join(app.getPath('userData'), 'startup.log'), line).catch(() => undefined)
+}
+
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'vdro-media',
@@ -36,6 +43,7 @@ const userDataPath =
     : path.join(appRoot as string, '.userdata'))
 mkdirSync(userDataPath, { recursive: true })
 app.setPath('userData', userDataPath)
+logStartup('main-entry')
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -77,6 +85,9 @@ function createWindow(settings: AppSettings): BrowserWindow {
   })
 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  logStartup('window-created')
+  window.webContents.once('did-finish-load', () => logStartup('renderer-loaded'))
+  window.once('ready-to-show', () => logStartup('window-ready-to-show'))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.setAlwaysOnTop(settings.alwaysOnTop)
   attachWindowStatePersistence(window, settings.rememberWindowState)
@@ -162,6 +173,7 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('top.vdro.app')
   Menu.setApplicationMenu(null)
   const settings = await loadSettings()
+  logStartup('settings-loaded')
   if (!settings.persistExtracted) {
     // Extracted clips are session-scoped here: the metadata index is deleted,
     // so any leftover files would become untracked orphans that can never be
@@ -176,6 +188,7 @@ app.whenReady().then(async () => {
   }
   registerMediaProtocol()
   registerIpc()
+  logStartup('startup-maintenance-complete')
 
   if (smokeIndex >= 0) {
     const filePath = process.argv[smokeIndex + 1]
