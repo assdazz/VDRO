@@ -74,18 +74,9 @@ Standard per-user NSIS installer (assisted mode, no administrator rights):
 - creates desktop and Start Menu shortcuts; uninstall keeps user data
 - unsigned; SmartScreen may warn; x64 only; no auto-update
 
-See `docs/安装程序说明.md` for details.
-
 ## Docs
 
-- 已修复问题与复现参考：`docs/已修复问题，再现问题可参考.txt`
-- 素材栏拖拽动画实现：`docs/素材栏拖拽动画实现.md`
-- 三栏面板尺寸与音频预览修复：`docs/三栏面板尺寸与音频预览修复.md`
-- 音频波形黄色当前时间线实现：`docs/音频波形黄色当前时间线实现.md`
-- 音频预览向下展开修复：`docs/音频预览向下展开修复.md`
-- 三栏折叠后大间距问题记录：`docs/三栏折叠后大间距问题记录.md`
-- UI 设计方向：`docs/UI设计方向.md`
-- 安装程序说明：`docs/安装程序说明.md`
+- UI 截图：`docs/screenshots/`
 - ClickHouse-inspired dark UI reference: `reference/clickhouse-DESIGN.md`
 
 ## License
