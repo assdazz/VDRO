@@ -16,8 +16,13 @@ import type {
   RegionRange,
   ShortcutSettings,
 } from '@shared/types'
+import { sanitizeSettings } from '@shared/settings'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { translateDom, translateUiText } from './i18n'
+import { useMediaPreview } from './playback/useMediaPreview'
+import { usePanelLayout } from './layout/usePanelLayout'
+import { PANEL_CSS, DEFAULT_LAYOUT, MIN_VIDEO_AREA_HEIGHT, AUDIO_COLLAPSED_HEIGHT } from './layout/panelLayout'
+import { findClipSource, bindClipSource } from './mediaSources'
 const SettingsDialog = lazy(() => import('./SettingsDialog').then((module) => ({
   default: module.SettingsDialog,
 })))
@@ -64,71 +69,6 @@ const PREVIEW_RESOLUTIONS = [
 ]
 
 const PREVIEW_FPS = [30, 60, 120, 144]
-const MIN_VIDEO_PREVIEW_HEIGHT = 180
-const MIN_AUDIO_PREVIEW_HEIGHT = 180
-const WORKSPACE_VERTICAL_PADDING = 16
-const MIN_VIDEO_AREA_HEIGHT =
-  MIN_VIDEO_PREVIEW_HEIGHT + WORKSPACE_VERTICAL_PADDING
-const PANEL_RESIZER_HEIGHT = 18
-const FIXED_AUDIO_HEIGHT = 268
-const AUDIO_COLLAPSED_HEIGHT = 48
-const AUDIO_EXPAND_DELTA = FIXED_AUDIO_HEIGHT - AUDIO_COLLAPSED_HEIGHT
-const PREVIEW_COLLAPSED_HEIGHT = 60
-const MIN_EDITOR_TOP_HEIGHT =
-  MIN_VIDEO_AREA_HEIGHT + FIXED_AUDIO_HEIGHT + PANEL_RESIZER_HEIGHT
-
-const LAYOUT_STORAGE_KEY = 'vdro.layout.v1'
-
-interface LayoutSettings {
-  inspectorWidth: number
-  timelineHeight: number
-  extractedRatio: number
-  previewCollapsed: boolean
-  timelineCollapsed: boolean
-  extractedCollapsed: boolean
-  soloHeight: number | null
-}
-
-const DEFAULT_LAYOUT: LayoutSettings = {
-  inspectorWidth: 340,
-  timelineHeight: FIXED_AUDIO_HEIGHT,
-  extractedRatio: 1 / 3,
-  previewCollapsed: false,
-  timelineCollapsed: false,
-  extractedCollapsed: false,
-  soloHeight: null,
-}
-
-function loadLayout(): LayoutSettings {
-  try {
-    const raw = window.localStorage.getItem(LAYOUT_STORAGE_KEY)
-    if (!raw) return DEFAULT_LAYOUT
-    const parsed = JSON.parse(raw) as Partial<LayoutSettings>
-    return {
-      inspectorWidth: clamp(
-        Number(parsed.inspectorWidth) || DEFAULT_LAYOUT.inspectorWidth,
-        240,
-        560,
-      ),
-      timelineHeight: FIXED_AUDIO_HEIGHT,
-      extractedRatio: clamp(
-        Number(parsed.extractedRatio) || DEFAULT_LAYOUT.extractedRatio,
-        0.18,
-        0.55,
-      ),
-      previewCollapsed: parsed.previewCollapsed === true,
-      timelineCollapsed: parsed.timelineCollapsed === true,
-      extractedCollapsed: parsed.extractedCollapsed === true,
-      soloHeight:
-        typeof parsed.soloHeight === 'number'
-          ? clamp(parsed.soloHeight, 120, 760)
-          : null,
-    }
-  } catch {
-    return DEFAULT_LAYOUT
-  }
-}
-
 function formatTime(seconds: number, milliseconds = true): string {
   const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
   const totalMs = Math.round(safe * 1000)
@@ -217,32 +157,13 @@ export default function App(): JSX.Element {
     cleanup: (() => void) | null
   } | null>(null)
   const suppressLibraryClickRef = useRef(false)
-  const mainColumnRef = useRef<HTMLDivElement>(null)
-  const editorTopRef = useRef<HTMLDivElement>(null)
-  const workspaceRef = useRef<HTMLElement>(null)
-  const timelinePanelRef = useRef<HTMLElement>(null)
-  const extractedPanelRef = useRef<HTMLElement>(null)
   const zoomFactorRef = useRef(1)
   const zoomTrackRef = useRef<HTMLDivElement>(null)
   const previewCanvasRef = useRef<HTMLCanvasElement>(null)
+  const [nativePreview, setNativePreview] = useState(true)
   const previewSettingsRef = useRef<HTMLDivElement>(null)
   const previewMenuRef = useRef<HTMLDivElement>(null)
   const appRootRef = useRef<HTMLDivElement>(null)
-  const [layout, setLayout] = useState<LayoutSettings>(loadLayout)
-  const [audioEditorHeight, setAudioEditorHeight] = useState<number | null>(null)
-  const [audioToggling, setAudioToggling] = useState(false)
-  const audioToggleTimerRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (audioToggleTimerRef.current !== null) {
-        window.clearTimeout(audioToggleTimerRef.current)
-      }
-    }
-  }, [])
-
-
-
   const [media, setMedia] = useState<ImportedMedia | null>(null)
   const [library, setLibrary] = useState<ImportedMedia[]>([])
   const [libraryCollapsed, setLibraryCollapsed] = useState(false)
@@ -286,6 +207,7 @@ export default function App(): JSX.Element {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS)
   const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const { layout, setLayout, audioEditorHeight, setAudioEditorHeight, audioToggling, mainColumnRef, editorTopRef, workspaceRef, timelinePanelRef, extractedPanelRef, effectiveTimelineHeight, minimumEditorHeight, soloPanel, isPreviewSolo, isSoloSized, togglePanel, beginInspectorResize, beginTimelineResize, beginExtractedResize, beginSoloResize } = usePanelLayout(settings, settingsLoaded, job?.status)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
 
   const hasVideo = Boolean(media && media.info.videoStreams.length > 0)
@@ -351,25 +273,6 @@ export default function App(): JSX.Element {
   const isTranslucent = isMaterialTheme && settings.translucent
   const effectiveSkipSeconds =
     settings.skipSeconds === 'custom' ? settings.customSkipSeconds : settings.skipSeconds
-  const timelinePanelHeight = layout.timelineCollapsed
-    ? 48
-    : FIXED_AUDIO_HEIGHT
-  const expandedPanelCount =
-    Number(!layout.previewCollapsed) +
-    Number(!layout.timelineCollapsed) +
-    Number(!layout.extractedCollapsed)
-  const soloPanel: 'preview' | 'timeline' | 'extracted' | null =
-    expandedPanelCount !== 1
-      ? null
-      : !layout.previewCollapsed
-        ? 'preview'
-        : !layout.timelineCollapsed
-          ? 'timeline'
-          : 'extracted'
-  const isPreviewSolo = soloPanel === 'preview'
-  const isSoloSized =
-    soloPanel !== null && soloPanel !== 'preview' && layout.soloHeight !== null
-  const effectiveTimelineHeight = timelinePanelHeight
   const losslessFormat = format === 'wav' || format === 'flac'
   const formatLabel = FORMATS.find((item) => item.value === format)?.label ?? format.toUpperCase()
   const nativeBitrateKbps =
@@ -411,6 +314,7 @@ export default function App(): JSX.Element {
       Math.abs(fps - sourceRate) < Math.abs(best - sourceRate) ? fps : best,
     )
     setPreviewFps(settings.previewFps === 'follow' ? nearestFps : settings.previewFps)
+    setNativePreview(settings.previewResolution === 'follow' && settings.previewFps === 'follow')
   }, [media?.id, settings.previewResolution, settings.previewFps])
 
   const syncRegion = useCallback((next: RegionRange): void => {
@@ -524,129 +428,7 @@ export default function App(): JSX.Element {
     [adoptMedia],
   )
 
-  useEffect(() => {
-    const video = videoRef.current
-    if (!video || !media) return
-
-    const onLoadedMetadata = (): void => {
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        setDuration(video.duration)
-      }
-    }
-    const onTimeUpdate = (): void => {
-      const mediaDuration =
-        Number.isFinite(video.duration) && video.duration > 0
-          ? video.duration
-          : 0
-      setCurrentTime(
-        mediaDuration > 0 && video.currentTime >= mediaDuration - 0.03
-          ? mediaDuration
-          : video.currentTime,
-      )
-    }
-    const onPlay = (): void => {
-      if (extractedPlaybackRef.current) {
-        setPlaying(true)
-        return
-      }
-      extractedAudioRef.current?.pause()
-      setPlayingExtractedId(null)
-      setPlaying(true)
-    }
-    const onPause = (): void => {
-      setPlaying(false)
-      setPreviewing(false)
-    }
-    const onEnded = (): void => {
-      // timeupdate often stops slightly before the real media duration, so
-      // the preview progress bar never reaches 100% for audio-only media.
-      if (Number.isFinite(video.duration) && video.duration > 0) {
-        setDuration(video.duration)
-        setCurrentTime(video.duration)
-      }
-      setPlaying(false)
-      setPreviewing(false)
-    }
-
-    video.addEventListener('loadedmetadata', onLoadedMetadata)
-    video.addEventListener('timeupdate', onTimeUpdate)
-    video.addEventListener('play', onPlay)
-    video.addEventListener('pause', onPause)
-    video.addEventListener('ended', onEnded)
-    video.load()
-
-    return () => {
-      video.removeEventListener('loadedmetadata', onLoadedMetadata)
-      video.removeEventListener('timeupdate', onTimeUpdate)
-      video.removeEventListener('play', onPlay)
-      video.removeEventListener('pause', onPause)
-      video.removeEventListener('ended', onEnded)
-    }
-  }, [media])
-
-  useEffect(() => {
-    const video = videoRef.current
-    const canvas = previewCanvasRef.current
-    if (!media || !hasVideo || !video || !canvas) return
-
-    const context = canvas.getContext('2d')
-    if (!context) return
-
-    let frame = 0
-    let lastDraw = 0
-
-    const draw = (): void => {
-      if (!video.videoWidth || !video.videoHeight) return
-      const aspect = video.videoWidth / video.videoHeight
-      const width = Math.max(1, Math.round(previewResolution * aspect))
-      const height = previewResolution
-      if (canvas.width !== width) canvas.width = width
-      if (canvas.height !== height) canvas.height = height
-      context.drawImage(video, 0, 0, width, height)
-    }
-
-    const loop = (now: number): void => {
-      if (video.paused) return
-      if (now - lastDraw >= 1000 / previewFps) {
-        draw()
-        lastDraw = now
-      }
-      frame = requestAnimationFrame(loop)
-    }
-
-    const start = (): void => {
-      cancelAnimationFrame(frame)
-      lastDraw = 0
-      frame = requestAnimationFrame(loop)
-    }
-    const stop = (): void => {
-      cancelAnimationFrame(frame)
-      draw()
-    }
-
-    video.addEventListener('loadedmetadata', draw)
-    video.addEventListener('loadeddata', draw)
-    video.addEventListener('canplay', draw)
-    video.addEventListener('seeked', draw)
-    video.addEventListener('timeupdate', draw)
-    video.addEventListener('play', start)
-    video.addEventListener('pause', stop)
-    draw()
-    const initialFrame = requestAnimationFrame(draw)
-    if (!video.paused) start()
-
-    return () => {
-      cancelAnimationFrame(frame)
-      cancelAnimationFrame(initialFrame)
-      video.removeEventListener('loadedmetadata', draw)
-      video.removeEventListener('loadeddata', draw)
-      video.removeEventListener('canplay', draw)
-      video.removeEventListener('timeupdate', draw)
-      video.removeEventListener('seeked', draw)
-      video.removeEventListener('play', start)
-      video.removeEventListener('pause', stop)
-    }
-  }, [media, hasVideo, previewResolution, previewFps])
+  useMediaPreview({ media, hasVideo, videoRef, previewCanvasRef, extractedAudioRef, extractedPlaybackRef, nativePreview, previewResolution, previewFps, setDuration, setCurrentTime, setPlaying, setPreviewing, setPlayingExtractedId })
 
   useEffect(() => {
     const video = videoRef.current
@@ -1317,14 +1099,14 @@ export default function App(): JSX.Element {
     async (clip: ExtractedClip): Promise<ExtractedClip | null> => {
       if (media && clip.sourceMediaId === media.id) return clip
 
-      const source = library.find((item) => item.fileName === clip.sourceName)
+      const source = findClipSource(clip, library)
       if (!source) {
-        setError('找不到该片段对应的源素材，请重新导入原文件')
+        setError('源素材不存在或同名素材无法区分，请重新导入原文件')
         return null
       }
 
       await adoptMedia(source)
-      const resolved = { ...clip, sourceMediaId: source.id }
+      const resolved = bindClipSource(clip, source)
       setExtractedClips((previous) =>
         previous.map((item) => (item.id === clip.id ? resolved : item)),
       )
@@ -1533,16 +1315,15 @@ export default function App(): JSX.Element {
 
   const updateSettings = useCallback((patch: Partial<AppSettings>): void => {
     setSettings((current) => {
-      const next = { ...current, ...patch }
-      void window.vdro.saveSettings(next).catch(() => undefined)
+      const next = sanitizeSettings({ ...current, ...patch })
       return next
     })
   }, [])
 
   const resetAllSettings = useCallback((): void => {
     setSettings(DEFAULT_APP_SETTINGS)
-    void window.vdro.saveSettings(DEFAULT_APP_SETTINGS).catch(() => undefined)
     setLayout(DEFAULT_LAYOUT)
+    setAudioEditorHeight(null)
     setLoop(DEFAULT_APP_SETTINGS.previewLoop)
     setLibraryCollapsed(DEFAULT_APP_SETTINGS.sidebarCollapsed)
     setNotice('已恢复全部默认设置')
@@ -1553,95 +1334,6 @@ export default function App(): JSX.Element {
     setAudioEditorHeight(null)
     setNotice('已重置界面布局')
   }, [])
-
-  const togglePanel = useCallback(
-    (panel: 'previewCollapsed' | 'timelineCollapsed' | 'extractedCollapsed'): void => {
-      if (panel === 'timelineCollapsed') {
-        if (layout.previewCollapsed) {
-          // Video is a collapsed 60px bar. The audio panel is the only
-          // expanding row, so the editor should be exactly their sum.
-          setAudioEditorHeight(
-            PREVIEW_COLLAPSED_HEIGHT +
-              (layout.timelineCollapsed
-                ? FIXED_AUDIO_HEIGHT
-                : AUDIO_COLLAPSED_HEIGHT),
-          )
-        } else {
-          const currentHeight =
-            editorTopRef.current?.getBoundingClientRect().height ??
-            (layout.timelineCollapsed
-              ? MIN_VIDEO_AREA_HEIGHT +
-                AUDIO_COLLAPSED_HEIGHT +
-                PANEL_RESIZER_HEIGHT
-              : MIN_EDITOR_TOP_HEIGHT)
-          const delta = layout.timelineCollapsed
-            ? AUDIO_EXPAND_DELTA
-            : -AUDIO_EXPAND_DELTA
-          const minHeight = layout.timelineCollapsed
-            ? MIN_EDITOR_TOP_HEIGHT
-            : MIN_VIDEO_AREA_HEIGHT +
-              AUDIO_COLLAPSED_HEIGHT +
-              PANEL_RESIZER_HEIGHT
-          const mainHeight =
-            mainColumnRef.current?.getBoundingClientRect().height ?? 720
-          const extractedFloor = layout.extractedCollapsed
-            ? AUDIO_COLLAPSED_HEIGHT
-            : 120
-          const maxHeight = Math.max(
-            minHeight,
-            mainHeight - extractedFloor - PANEL_RESIZER_HEIGHT,
-          )
-          // Grow/shrink editor-top by the same delta as the audio panel so the
-          // audio top edge stays fixed and the panel expands downward. Clamp
-          // it so a video-only layout that already fills the window cannot be
-          // pushed past the extracted panel.
-          setAudioEditorHeight(
-            Math.min(maxHeight, Math.max(minHeight, currentHeight + delta)),
-          )
-        }
-
-        setAudioToggling(true)
-        if (audioToggleTimerRef.current !== null) {
-          window.clearTimeout(audioToggleTimerRef.current)
-        }
-        audioToggleTimerRef.current = window.setTimeout(() => {
-          setAudioToggling(false)
-          audioToggleTimerRef.current = null
-        }, 220)
-      } else if (panel === 'previewCollapsed') {
-        if (layout.previewCollapsed) {
-          // Expanding video from the all-collapsed state.
-          setAudioEditorHeight(
-            layout.timelineCollapsed
-              ? MIN_VIDEO_AREA_HEIGHT +
-                  AUDIO_COLLAPSED_HEIGHT +
-                  PANEL_RESIZER_HEIGHT
-              : MIN_EDITOR_TOP_HEIGHT,
-          )
-        } else {
-          // Collapsing video: drop the editor to the two collapsed bars so
-          // there is no empty space above the extracted-audio panel.
-          setAudioEditorHeight(
-            PREVIEW_COLLAPSED_HEIGHT +
-              (layout.timelineCollapsed
-                ? AUDIO_COLLAPSED_HEIGHT
-                : FIXED_AUDIO_HEIGHT),
-          )
-        }
-      }
-
-      setLayout((current) => ({
-        ...current,
-        [panel]: !current[panel],
-        extractedRatio:
-          panel === 'extractedCollapsed' && current.extractedCollapsed
-            ? Math.max(current.extractedRatio, 0.18)
-            : current.extractedRatio,
-        soloHeight: null,
-      }))
-    },
-    [layout.previewCollapsed, layout.timelineCollapsed],
-  )
 
   const clearTemporaryFiles = useCallback(async (): Promise<void> => {
     if (
@@ -1925,14 +1617,6 @@ export default function App(): JSX.Element {
   }, [notice])
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout))
-    } catch {
-      // Layout persistence is non-critical.
-    }
-  }, [layout])
-
-  useEffect(() => {
     let cancelled = false
 
     void (async () => {
@@ -1952,7 +1636,6 @@ export default function App(): JSX.Element {
         setChannels(next.channels)
         setLoop(next.previewLoop)
         setLibraryCollapsed(next.sidebarCollapsed)
-        if (!next.restoreLayout) setLayout(DEFAULT_LAYOUT)
 
         const [info, loadedLibrary, loadedClips] = await Promise.all([
           window.vdro.getAppInfo().catch(() => null),
@@ -1980,10 +1663,8 @@ export default function App(): JSX.Element {
         if (loadedClips.length > 0) {
           setExtractedClips(
             loadedClips.map((clip) => {
-              const source = loadedLibrary.media.find(
-                (item) => item.fileName === clip.sourceName,
-              )
-              return source ? { ...clip, sourceMediaId: source.id } : clip
+              const source = findClipSource(clip, loadedLibrary.media)
+              return bindClipSource(clip, source)
             }),
           )
         }
@@ -2002,7 +1683,7 @@ export default function App(): JSX.Element {
   useEffect(() => {
     if (!settingsLoaded) return
     const timer = window.setTimeout(() => {
-      void window.vdro.saveSettings(settings).catch(() => undefined)
+      void window.vdro.saveSettings(settings).catch((cause) => setError(`保存设置失败：${errorMessage(cause)}`))
     }, 150)
     return () => window.clearTimeout(timer)
   }, [settings, settingsLoaded])
@@ -2090,34 +1771,27 @@ export default function App(): JSX.Element {
   }, [settingsLoaded, settings.sidebarCollapsed])
 
   useEffect(() => {
-    if (!settingsLoaded) return
-    setLayout(settings.restoreLayout ? loadLayout() : DEFAULT_LAYOUT)
-  }, [settingsLoaded, settings.restoreLayout])
-
-  useEffect(() => {
     if (!media) return
     setExtractedClips((previous) =>
       previous.map((clip) =>
-        clip.sourceName === media.fileName
-          ? { ...clip, sourceMediaId: media.id }
-          : clip,
+        bindClipSource(clip, findClipSource(clip, library)),
       ),
     )
-  }, [media?.id])
+  }, [media?.id, library])
 
   useEffect(() => {
     if (!settingsLoaded) return
     const entries = settings.persistLibrary
       ? library.map((item) => ({ filePath: item.filePath, fileName: item.fileName }))
       : []
-    void window.vdro.saveLibrary(entries).catch(() => undefined)
+    void window.vdro.saveLibrary(entries).catch((cause) => setError(`保存素材库失败：${errorMessage(cause)}`))
   }, [library, settings.persistLibrary, settingsLoaded])
 
   useEffect(() => {
     if (!settingsLoaded) return
     const clips =
       settings.persistExtracted && settings.persistLibrary ? extractedClips : []
-    void window.vdro.saveExtractedClips(clips).catch(() => undefined)
+    void window.vdro.saveExtractedClips(clips).catch((cause) => setError(`保存提取记录失败：${errorMessage(cause)}`))
   }, [
     extractedClips,
     settings.persistExtracted,
@@ -2140,178 +1814,6 @@ export default function App(): JSX.Element {
     observer.observe(track)
     return () => observer.disconnect()
   }, [zoomFactor, zoomMaxScroll])
-
-  const beginInspectorResize = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>): void => {
-      event.preventDefault()
-      const startX = event.clientX
-      const startWidth = layout.inspectorWidth
-      const maxWidth = Math.max(240, Math.min(560, window.innerWidth - 650))
-      const previousSelect = document.body.style.userSelect
-      document.body.style.userSelect = 'none'
-
-      const onMove = (moveEvent: PointerEvent): void => {
-        setLayout((current) => ({
-          ...current,
-          inspectorWidth: clamp(startWidth + startX - moveEvent.clientX, 240, maxWidth),
-        }))
-      }
-      const onUp = (): void => {
-        document.body.style.userSelect = previousSelect
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp, { once: true })
-    },
-    [layout.inspectorWidth],
-  )
-
-  const beginTimelineResize = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>): void => {
-      event.preventDefault()
-      const startY = event.clientY
-      const startHeight =
-        editorTopRef.current?.getBoundingClientRect().height ?? 448
-      const mainHeight =
-        mainColumnRef.current?.getBoundingClientRect().height ?? 720
-      const audioHeight = layout.timelineCollapsed
-        ? AUDIO_COLLAPSED_HEIGHT
-        : FIXED_AUDIO_HEIGHT
-      const minEditorHeight =
-        MIN_VIDEO_AREA_HEIGHT + audioHeight + PANEL_RESIZER_HEIGHT
-      const extractedFloor = layout.extractedCollapsed
-        ? AUDIO_COLLAPSED_HEIGHT
-        : 120
-      const maxEditorHeight = Math.max(
-        minEditorHeight,
-        mainHeight - extractedFloor - PANEL_RESIZER_HEIGHT,
-      )
-      const previousSelect = document.body.style.userSelect
-      document.body.style.userSelect = 'none'
-      document.body.classList.add('is-resizing-layout')
-
-      const onMove = (moveEvent: PointerEvent): void => {
-        setAudioEditorHeight(
-          clamp(
-            startHeight + (moveEvent.clientY - startY),
-            minEditorHeight,
-            maxEditorHeight,
-          ),
-        )
-      }
-      const onUp = (): void => {
-        document.body.style.userSelect = previousSelect
-        document.body.classList.remove('is-resizing-layout')
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp, { once: true })
-    },
-    [
-      layout.timelineCollapsed,
-      layout.extractedCollapsed,
-    ],
-  )
-
-  const beginExtractedResize = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>): void => {
-      event.preventDefault()
-      const startY = event.clientY
-      const mainHeight =
-        mainColumnRef.current?.getBoundingClientRect().height ?? 720
-      const startExtractedHeight =
-        extractedPanelRef.current?.getBoundingClientRect().height ??
-        mainHeight * layout.extractedRatio
-      // Capture the real displayed height. layout.extractedRatio can be stale
-      // after the video slider freezes editor-top.
-      const startRatio = clamp(startExtractedHeight / mainHeight, 0.18, 0.55)
-      const soloMode = soloPanel === 'extracted'
-      const startSolo = startExtractedHeight || 220
-      const previousSelect = document.body.style.userSelect
-      document.body.style.userSelect = 'none'
-      document.body.classList.add('is-resizing-layout')
-      let moved = false
-
-      const onMove = (moveEvent: PointerEvent): void => {
-        if (soloMode) {
-          const next = clamp(
-            startSolo - (moveEvent.clientY - startY),
-            120,
-            Math.max(120, mainHeight - 120),
-          )
-          setLayout((current) => ({ ...current, soloHeight: next }))
-          return
-        }
-
-        // Do not touch layout until a real drag. A click on the handle must not
-        // switch editor-top back to flex sizing with an old ratio.
-        if (!moved) {
-          moved = true
-          setAudioEditorHeight(null)
-        }
-        const up = startY - moveEvent.clientY
-        const nextRatio = clamp(startRatio + up / mainHeight, 0.18, 0.55)
-        setLayout((current) => ({
-          ...current,
-          extractedRatio: nextRatio,
-        }))
-      }
-      const onUp = (): void => {
-        document.body.style.userSelect = previousSelect
-        document.body.classList.remove('is-resizing-layout')
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp, { once: true })
-    },
-    [layout.extractedRatio, soloPanel],
-  )
-
-  const beginSoloResize = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>): void => {
-      if (!soloPanel) return
-      event.preventDefault()
-      const startY = event.clientY
-      const startHeight =
-        soloPanel === 'preview'
-          ? (workspaceRef.current?.getBoundingClientRect().height ?? 200)
-          : soloPanel === 'timeline'
-            ? (timelinePanelRef.current?.getBoundingClientRect().height ?? 220)
-            : (extractedPanelRef.current?.getBoundingClientRect().height ?? 220)
-      const mainHeight =
-        mainColumnRef.current?.getBoundingClientRect().height ?? 720
-      const previousSelect = document.body.style.userSelect
-      document.body.style.userSelect = 'none'
-      document.body.classList.add('is-resizing-layout')
-
-      const onMove = (moveEvent: PointerEvent): void => {
-        const minHeight =
-          soloPanel === 'preview' ? MIN_VIDEO_PREVIEW_HEIGHT : 120
-        const next = clamp(
-          startHeight + (moveEvent.clientY - startY),
-          minHeight,
-          Math.max(minHeight, mainHeight - 120),
-        )
-        setLayout((current) => ({ ...current, soloHeight: next }))
-      }
-      const onUp = (): void => {
-        document.body.style.userSelect = previousSelect
-        document.body.classList.remove('is-resizing-layout')
-        window.removeEventListener('pointermove', onMove)
-        window.removeEventListener('pointerup', onUp)
-      }
-
-      window.addEventListener('pointermove', onMove)
-      window.addEventListener('pointerup', onUp, { once: true })
-    },
-    [soloPanel],
-  )
 
   useEffect(() => {
     if (!openOutputMenu) return
@@ -2444,6 +1946,7 @@ export default function App(): JSX.Element {
       className={`app theme-${settings.theme} material-${settings.materialColor} accent-${settings.accent} ui-scale-${settings.uiScale}`}
       style={
         {
+          ...PANEL_CSS,
           '--vd-font-scale': settings.fontScale / 100,
         } as CSSProperties
       }
@@ -2610,7 +2113,7 @@ export default function App(): JSX.Element {
           {libraryCollapsed && <span className="library-rail-label">素材</span>}
         </aside>
 
-        <div className="main-column" ref={mainColumnRef}>
+        <div className={`main-column${soloPanel === 'extracted' ? ' has-solo-extracted' : ''}`} ref={mainColumnRef}>
           <div
             ref={editorTopRef}
             className={`editor-top${layout.previewCollapsed ? ' preview-collapsed' : ''}${
@@ -2640,18 +2143,7 @@ export default function App(): JSX.Element {
                         ? undefined
                         : `${audioEditorHeight}px`,
                     minHeight:
-                      audioEditorHeight === null
-                        ? undefined
-                        : `${Math.max(
-                            audioEditorHeight,
-                            layout.previewCollapsed
-                              ? 0
-                              : layout.timelineCollapsed
-                                ? MIN_VIDEO_AREA_HEIGHT +
-                                  48 +
-                                  PANEL_RESIZER_HEIGHT
-                                : MIN_EDITOR_TOP_HEIGHT,
-                          )}px`,
+                      `${Math.max(audioEditorHeight ?? 0, minimumEditorHeight)}px`,
                   }
             }
           >
@@ -2706,7 +2198,7 @@ export default function App(): JSX.Element {
                       src={media.url}
                       playsInline
                     />
-                    {hasVideo && <canvas ref={previewCanvasRef} className="preview-canvas" />}
+                    {hasVideo && !nativePreview && <canvas ref={previewCanvasRef} className="preview-canvas" />}
                     {!hasVideo && (
                       <div className="audio-stage">
                         <div className="audio-stage-icon">
@@ -2806,7 +2298,7 @@ export default function App(): JSX.Element {
                         onClick={togglePreviewSettings}
                       >
                         <span>
-                          {previewResolutionLabel} · {previewFps}帧
+                          {nativePreview ? (settings.language === 'en-US' ? 'Native preview' : '原生预览') : `${previewResolutionLabel} · ${previewFps}帧`}
                         </span>
                         <IconChevronDown />
                       </button>
@@ -2820,15 +2312,18 @@ export default function App(): JSX.Element {
                           >
                             <div className="settings-section">
                               <span className="eyebrow">预览分辨率</span>
+                              <button type="button" className={`setting-option${nativePreview ? ' is-active' : ''}`} onClick={() => setNativePreview(true)}>
+                                {settings.language === 'en-US' ? 'Native preview (follow source)' : '原生预览（跟随源）'}
+                              </button>
                               <div className="settings-grid">
                                 {PREVIEW_RESOLUTIONS.map((item) => (
                                   <button
                                     key={item.height}
                                     className={`setting-option${
-                                      previewResolution === item.height ? ' is-active' : ''
+                                      !nativePreview && previewResolution === item.height ? ' is-active' : ''
                                     }`}
                                     type="button"
-                                    onClick={() => setPreviewResolution(item.height)}
+                                    onClick={() => { setNativePreview(false); setPreviewResolution(item.height) }}
                                   >
                                     {item.label}
                                   </button>
@@ -2848,10 +2343,10 @@ export default function App(): JSX.Element {
                                   <button
                                     key={fps}
                                     className={`setting-option${
-                                      previewFps === fps ? ' is-active' : ''
+                                      !nativePreview && previewFps === fps ? ' is-active' : ''
                                     }`}
                                     type="button"
-                                    onClick={() => setPreviewFps(fps)}
+                                    onClick={() => { setNativePreview(false); setPreviewFps(fps) }}
                                   >
                                     {fps}
                                   </button>
@@ -3170,7 +2665,7 @@ export default function App(): JSX.Element {
 
           <section
             ref={extractedPanelRef}
-            className={`extracted-panel${layout.extractedCollapsed ? ' is-collapsed' : ''}`}
+            className={`extracted-panel${layout.extractedCollapsed ? ' is-collapsed' : ''}${soloPanel === 'extracted' ? ' is-solo' : ''}`}
             style={
               layout.extractedCollapsed
                 ? { flexGrow: 0, flexBasis: '48px', minHeight: '48px' }

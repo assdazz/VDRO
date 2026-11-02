@@ -114,7 +114,7 @@ namespace VdroLauncher
                         Quote(appDir) +
                         " --user-data-dir=" +
                         Quote(Path.Combine(appDir, ".userdata")) +
-                        " --no-sandbox --disable-gpu" +
+                        " --no-sandbox" +
                         (args.Length == 0
                             ? string.Empty
                             : " " + string.Join(" ", Array.ConvertAll(args, Quote))),

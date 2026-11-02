@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
+import { writeJson } from './files'
 import type { ExtractedClip, StoredLibraryEntry } from '../shared/types'
 
 function libraryPath(): string {
@@ -41,16 +42,7 @@ export async function loadStoredLibrary(): Promise<StoredLibraryEntry[]> {
 }
 
 export async function saveStoredLibrary(entries: StoredLibraryEntry[]): Promise<void> {
-  await fs.mkdir(path.dirname(libraryPath()), { recursive: true })
-  await fs.writeFile(
-    libraryPath(),
-    JSON.stringify(
-      entries.map((entry) => ({ filePath: entry.filePath, fileName: entry.fileName })),
-      null,
-      2,
-    ),
-    'utf8',
-  )
+  await writeJson(libraryPath(), entries.map((entry) => ({ filePath: entry.filePath, fileName: entry.fileName })))
 }
 
 export async function loadStoredExtracted(): Promise<ExtractedClip[]> {
@@ -73,29 +65,12 @@ export async function loadStoredExtracted(): Promise<ExtractedClip[]> {
 }
 
 export async function saveStoredExtracted(clips: ExtractedClip[]): Promise<void> {
-  await fs.mkdir(path.dirname(extractedMetaPath()), { recursive: true })
-  await fs.writeFile(
-    extractedMetaPath(),
-    JSON.stringify(
-      clips
-        .filter((clip) => isInsideExtractedRoot(clip.filePath))
-        .map((clip) => ({
-          id: clip.id,
-          filePath: clip.filePath,
-          fileName: clip.fileName,
-          start: clip.start,
-          end: clip.end,
-          duration: clip.duration,
-          size: clip.size,
-          format: clip.format,
-          sourceMediaId: clip.sourceMediaId,
-          sourceName: clip.sourceName,
-        })),
-      null,
-      2,
-    ),
-    'utf8',
-  )
+  await writeJson(extractedMetaPath(), clips.filter((clip) => isInsideExtractedRoot(clip.filePath)).map((clip) => ({
+    id: clip.id, filePath: clip.filePath, fileName: clip.fileName,
+    start: clip.start, end: clip.end, duration: clip.duration, size: clip.size,
+    format: clip.format, sourceMediaId: clip.sourceMediaId, sourceName: clip.sourceName,
+    sourceFilePath: clip.sourceFilePath,
+  })))
 }
 
 export async function cleanupExtractedOrphans(): Promise<void> {

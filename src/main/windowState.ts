@@ -1,5 +1,6 @@
 import { app, BrowserWindow, screen } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
+import { writeJsonSync } from './files'
 import path from 'node:path'
 
 export interface WindowState {
@@ -57,12 +58,7 @@ export function attachWindowStatePersistence(
     if (window.isDestroyed()) return
     const bounds = window.getNormalBounds()
     try {
-      mkdirSync(path.dirname(statePath()), { recursive: true })
-      writeFileSync(
-        statePath(),
-        JSON.stringify({ x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }),
-        'utf8',
-      )
+      writeJsonSync(statePath(), { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height })
     } catch {
       // Window state persistence is non-critical.
     }

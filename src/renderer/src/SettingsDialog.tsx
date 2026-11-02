@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
+import { DecoderSettings } from './DecoderSettings'
 import type { JSX, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { translateUiText } from './i18n'
 import type {
@@ -389,6 +391,7 @@ export function SettingsDialog({
             {tab === 'preview' && (
               <section>
                 <h3>预览与播放</h3>
+                <DecoderSettings settings={settings} onUpdate={onUpdate} />
                 <p className="settings-hint">新建预览时使用；也可在预览菜单中临时切换。</p>
                 <SelectRow
                   label="默认预览分辨率"
@@ -788,7 +791,7 @@ export function SettingsDialog({
                   type="button"
                   onClick={() => {
                     setShortcutError(null)
-                    onUpdate({ shortcuts: DEFAULT_SHORTCUTS })
+                    onUpdate({ shortcuts: DEFAULT_APP_SETTINGS.shortcuts })
                   }}
                 >
                   恢复默认快捷键
@@ -830,12 +833,4 @@ export function SettingsDialog({
       </div>
     </div>
   )
-}
-
-const DEFAULT_SHORTCUTS: ShortcutSettings = {
-  play: 'Space',
-  setIn: 'I',
-  setOut: 'O',
-  seekBack: 'ArrowLeft',
-  seekForward: 'ArrowRight',
 }

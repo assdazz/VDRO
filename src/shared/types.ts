@@ -74,6 +74,7 @@ export interface ExtractedClip {
   format: ExportFormat
   sourceMediaId: string
   sourceName: string
+  sourceFilePath?: string
 }
 
 export interface SaveExtractedResult {
@@ -123,6 +124,7 @@ export interface ShortcutSettings {
 }
 
 export interface AppSettings {
+  decoderMode: 'auto' | 'software'
   outputFormat: ExportFormat
   outputQuality: OutputQualitySetting
   sampleRate: 44100 | 48000
@@ -172,6 +174,8 @@ export interface AppInfo {
 }
 
 export interface VdroApi {
+  getDecoderInfo: (mediaUrl?: string) => Promise<DecoderInfo>
+  restartApp: (settings: AppSettings) => Promise<void>
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
   getAppInfo: () => Promise<AppInfo>
@@ -203,4 +207,13 @@ export interface VdroApi {
   onExportDone: (callback: (payload: ExportDone) => void) => () => void
   onExportError: (callback: (payload: ExportError) => void) => () => void
   onExportCancelled: (callback: (payload: ExportCancelled) => void) => () => void
+}
+
+export interface DecoderInfo {
+  mode: 'auto' | 'software'
+  videoDecode: string
+  adapters: string[]
+  decoderName: string | null
+  decoding: 'hardware' | 'software' | 'unknown'
+  gpuVendor: string | null
 }

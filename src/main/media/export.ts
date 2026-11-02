@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { ExportFormat } from '../../shared/types'
 import { ffmpegPath } from './binaries'
+import { replaceFile } from '../files'
 
 export interface ExportFileOptions {
   start: number
@@ -160,8 +161,7 @@ export async function exportToFile(
         }
 
         try {
-          await fs.rm(outputPath, { force: true })
-          await fs.rename(tempPath, outputPath)
+          await replaceFile(tempPath, outputPath)
           onProgress?.(100)
           resolve()
         } catch (error) {

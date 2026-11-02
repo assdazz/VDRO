@@ -34,6 +34,10 @@ npm run build      # electron-vite build -> out/
 npm run dist       # electron-builder -> release/
 ```
 
+## Video decoding
+
+Settings → Preview offers automatic hardware decoding (NVIDIA / AMD / Intel) or software decoding. Restart to apply changes. GPU availability and playback frame counters are shown separately; availability does not confirm the decoder used by the current stream. See [video decoding](docs/video-decoding.md).
+
 ## Settings
 
 Click the gear icon at the top-right. The settings cover:
@@ -58,14 +62,14 @@ VDRO\
 ```
 
 The launcher builds once via a C# compiler and starts the runtime with
-`--no-sandbox --disable-gpu` as compatibility workarounds for non-system
+`--no-sandbox` as compatibility workarounds for non-system
 workspace drives. `start-vdro.cmd` is a fallback that builds (if needed) and
 launches the same `VDRO.exe`. For users on this drive, install once with
 `npm install`; the portable runtime is already in `runtime\`.
 
-## Version 1.2.2
+## Version 1.2.5
 
-See [release notes](docs/release-1.2.2.md) for startup and waveform-selection improvements.
+See [release notes](docs/release-1.2.5.md) for startup and waveform-selection improvements.
 
 ## Installed build
 

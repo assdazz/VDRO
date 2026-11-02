@@ -28,6 +28,8 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 }
 
 const api: VdroApi = {
+  getDecoderInfo: (mediaUrl) => ipcRenderer.invoke('app:decoder-info', mediaUrl),
+  restartApp: (settings) => ipcRenderer.invoke('app:restart', settings),
   getSettings: () => ipcRenderer.invoke('settings:get') as Promise<AppSettings>,
   saveSettings: (settings: AppSettings) =>
     ipcRenderer.invoke('settings:save', settings) as Promise<void>,

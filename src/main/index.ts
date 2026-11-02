@@ -11,6 +11,7 @@ import { loadSettings } from './settings'
 import { cleanupExtractedByPolicy, cleanupExtractedOrphans, clearExtractedFiles } from './storage'
 import { attachWindowStatePersistence, loadWindowState } from './windowState'
 import type { AppSettings } from '../shared/types'
+import { configureDecoder, monitorDecoders } from './decoder'
 
 // Include Electron's time before evaluating this entry point in the measurement.
 const startupStartedAt = Date.now() - process.uptime() * 1000
@@ -43,6 +44,7 @@ const userDataPath =
     : path.join(appRoot as string, '.userdata'))
 mkdirSync(userDataPath, { recursive: true })
 app.setPath('userData', userDataPath)
+configureDecoder()
 logStartup('main-entry')
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -96,6 +98,7 @@ function createWindow(settings: AppSettings): BrowserWindow {
   }
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL
+  monitorDecoders(window.webContents)
   if (isDev && rendererUrl) {
     void window.loadURL(rendererUrl)
   } else {

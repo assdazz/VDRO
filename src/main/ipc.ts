@@ -30,6 +30,8 @@ import { mediaUrl, registerMediaFile, unregisterMediaFile } from './media/protoc
 import { EXTENSIONS, exportToFile } from './media/export'
 import { buildFileName } from './filename'
 import { loadSettings, saveSettings } from './settings'
+import { getDecoderInfo } from './decoder'
+import { copyFileSafely, copyUniqueFile } from './files'
 import {
   clearExtractedFiles,
   extractedRoot,
@@ -175,6 +177,13 @@ function validateExport(request: ExportRequest, info: MediaInfo): void {
 }
 
 export function registerIpc(): void {
+  ipcMain.handle('app:decoder-info', (event, mediaUrl: unknown) =>
+    getDecoderInfo(event.sender.id, typeof mediaUrl === 'string' ? mediaUrl : undefined))
+  ipcMain.handle('app:restart', async (_event, settings: unknown) => {
+    await saveSettings(settings)
+    app.relaunch()
+    app.quit()
+  })
   ipcMain.handle('media:open', async (event) => {
     const window = senderWindow(event)
     const options: Electron.OpenDialogOptions = {
@@ -265,6 +274,7 @@ export function registerIpc(): void {
       format: request.format,
       sourceMediaId: request.mediaId,
       sourceName: path.basename(entry.filePath),
+      sourceFilePath: entry.filePath,
     }
     return clip
   })
@@ -296,17 +306,7 @@ export function registerIpc(): void {
         try {
           const directoryStat = await fs.stat(settings.saveDirectory)
           if (directoryStat.isDirectory()) {
-            let targetPath = path.join(settings.saveDirectory, saveFileName)
-            let index = 1
-            while (await fs.stat(targetPath).catch(() => null)) {
-              const stem = path.basename(saveFileName, path.extname(saveFileName))
-              targetPath = path.join(
-                settings.saveDirectory,
-                `${stem} (${index})${path.extname(saveFileName)}`,
-              )
-              index += 1
-            }
-            await fs.copyFile(filePath, targetPath)
+            const targetPath = await copyUniqueFile(filePath, settings.saveDirectory, saveFileName)
             return { canceled: false, filePath: targetPath } satisfies SaveExtractedResult
           }
         } catch {
@@ -331,7 +331,7 @@ export function registerIpc(): void {
       const targetPath = result.filePath.toLowerCase().endsWith(`.${extension}`)
         ? result.filePath
         : `${result.filePath}.${extension}`
-      await fs.copyFile(filePath, targetPath)
+      await copyFileSafely(filePath, targetPath)
       return { canceled: false, filePath: targetPath } satisfies SaveExtractedResult
     },
   )

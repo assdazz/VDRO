@@ -125,20 +125,7 @@ button:disabled {
 .app.ui-scale-110 .editor-top,
 .app.ui-scale-120 .editor-top,
 .app.ui-scale-125 .editor-top {
-  min-height: 482px;
   overflow: visible;
-}
-
-.app.ui-scale-110 .editor-top.timeline-collapsed,
-.app.ui-scale-120 .editor-top.timeline-collapsed,
-.app.ui-scale-125 .editor-top.timeline-collapsed {
-  min-height: 262px;
-}
-
-.app.ui-scale-110 .editor-top.preview-collapsed,
-.app.ui-scale-120 .editor-top.preview-collapsed,
-.app.ui-scale-125 .editor-top.preview-collapsed {
-  min-height: 0;
 }
 
 .app.ui-scale-110 .workspace,
@@ -433,17 +420,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.editor-top:not(.preview-collapsed) {
-  /* 180px video + 16px workspace padding + 268px audio + 18px resizer:
-     keep in sync with MIN_EDITOR_TOP_HEIGHT so the fixed-height audio panel
-     can never be clipped by the extracted panel. */
-  min-height: 482px;
-}
-
-.editor-top.timeline-collapsed:not(.preview-collapsed) {
-  min-height: 262px;
 }
 
 .workspace {
@@ -955,6 +931,19 @@ body.is-library-dragging {
   background: transparent;
   pointer-events: none;
   z-index: 2;
+}
+
+.decoder-settings {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--vd-border);
+}
+
+.decoder-status {
+  color: var(--vd-text-secondary);
+  font-size: calc(var(--vd-font-scale, 1) * 12px);
+  line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 
 .preview-hud {
@@ -1489,10 +1478,10 @@ select:disabled {
 .timeline-panel {
   position: relative;
   z-index: 4;
-  flex: 0 0 268px;
+  flex: 0 0 var(--panel-audio-height);
   margin: 0 12px;
   padding: 10px 12px 10px;
-  min-height: 268px;
+  min-height: var(--panel-audio-height);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2477,8 +2466,8 @@ select:disabled {
   }
 
   .timeline-panel.is-collapsed {
-    flex-basis: 48px !important;
-    min-height: 48px !important;
+    flex-basis: var(--panel-audio-collapsed) !important;
+    min-height: var(--panel-audio-collapsed) !important;
   }
 
   .waveform,
@@ -2710,6 +2699,9 @@ select:disabled {
 
 .settings-directory .settings-label-block {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .settings-directory-actions {
@@ -2800,7 +2792,7 @@ select:disabled {
 .about-grid {
   display: grid;
   grid-template-columns: 90px minmax(0, 1fr);
-  gap: 9px 14px;
+  gap: 9px 28px;
   align-items: start;
   font-size: calc(var(--vd-font-scale, 1) * 12px);
 }
@@ -3138,9 +3130,7 @@ body.vdro-translucent {
   background-color: rgba(10, 17, 28, 0.8);
 }
 
-/* Material themes use translucent gradients without live backdrop blur:
-   the portable build runs with GPU acceleration disabled, so large blur
-   surfaces make dragging and scrolling noticeably slow. */
+/* Keep material gradients inexpensive on software-rendered systems as well. */
 .app.theme-acrylic .library-panel,
 .app.theme-acrylic .preview-panel,
 .app.theme-acrylic .inspector,
@@ -3223,8 +3213,8 @@ body.vdro-translucent {
 
 .timeline-panel.is-collapsed {
   padding: 0 10px;
-  flex-basis: 48px !important;
-  min-height: 48px !important;
+  flex-basis: var(--panel-audio-collapsed) !important;
+  min-height: var(--panel-audio-collapsed) !important;
 }
 
 .timeline-panel.is-collapsed .timeline-head {
@@ -3360,7 +3350,7 @@ body.vdro-translucent {
 }
 
 .preview-panel:not(.is-collapsed) {
-  min-height: 180px;
+  min-height: var(--panel-video-min);
 }
 
 .preview-panel {
@@ -3368,7 +3358,7 @@ body.vdro-translucent {
 }
 
 .workspace:not(.is-collapsed) {
-  min-height: 196px;
+  min-height: var(--panel-workspace-min);
   overflow: visible;
 }
 
@@ -3416,9 +3406,14 @@ body.vdro-translucent {
 }
 
 .workspace.is-collapsed {
-  flex: 0 0 60px;
-  min-height: 60px;
+  flex: 0 0 var(--panel-preview-collapsed);
+  min-height: var(--panel-preview-collapsed);
   padding-bottom: 0;
+  transition: none;
+}
+
+.preview-panel.is-collapsed {
+  transition: none;
 }
 
 .editor-top.preview-collapsed .timeline-panel:not(.is-collapsed) {
@@ -3426,8 +3421,22 @@ body.vdro-translucent {
 }
 
 .editor-top.all-top-collapsed {
-  flex: 0 0 auto !important;
+  /* 60px video bar + 48px audio bar. Do not retain an expanded height
+     through the size transition while the only open panel is resized. */
+  flex: 0 0 var(--panel-folded-top) !important;
+  height: var(--panel-folded-top);
+  min-height: var(--panel-folded-top);
+  transition: none;
+}
+
+/* The only open panel must fit the viewport even at enlarged UI scales. */
+.app .main-column.has-solo-extracted {
   min-height: 0;
+  overflow: hidden;
+}
+
+.extracted-panel.is-solo {
+  transition: none;
 }
 
 .resizer.is-compact {

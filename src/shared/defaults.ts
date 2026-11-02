@@ -1,6 +1,7 @@
 import type { AppSettings } from './types'
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  decoderMode: 'auto',
   outputFormat: 'mp3',
   outputQuality: 192,
   sampleRate: 48000,
