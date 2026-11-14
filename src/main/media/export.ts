@@ -5,8 +5,11 @@ import path from 'node:path'
 import type { ExportFormat } from '../../shared/types'
 import { ffmpegPath } from './binaries'
 import { replaceFile } from '../files'
+import type { AudioAdjustment } from '../../shared/types'
+import { adjustmentFilters, pitchCommands } from './adjustmentFilters'
 
 export interface ExportFileOptions {
+  effects?: AudioAdjustment
   start: number
   end: number
   format: ExportFormat
@@ -58,12 +61,19 @@ export async function exportToFile(
   signal?: AbortSignal,
 ): Promise<void> {
   const duration = options.end - options.start
+  sourcePath = path.resolve(sourcePath)
+  outputPath = path.resolve(outputPath)
+  const commands = options.effects ? pitchCommands(options.effects, options.start, duration) : ''
+  const commandName = commands ? `${randomUUID()}.pitch` : undefined
+  const filters = options.effects ? adjustmentFilters(options.effects, duration, options.start, commandName) : []
   if (!Number.isFinite(duration) || duration <= 0) {
     throw new Error('片段时长无效')
   }
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true })
   const tempPath = `${outputPath}.${randomUUID()}.part`
+  const commandPath = commandName ? path.join(path.dirname(outputPath), commandName) : undefined
+  if (commandPath) await fs.writeFile(commandPath, commands, 'utf8')
 
   const args = [
     '-hide_banner',
@@ -79,6 +89,7 @@ export async function exportToFile(
     '-map',
     `0:${options.audioStreamIndex}`,
     '-vn',
+    ...(filters.length ? ['-af', filters.join(',')] : []),
     '-ac',
     String(options.channels),
     '-ar',
@@ -93,9 +104,10 @@ export async function exportToFile(
     tempPath,
   ]
 
-  return await new Promise<void>((resolve, reject) => {
+  try { return await new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegPath, args, {
       windowsHide: true,
+      cwd: path.dirname(outputPath),
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
@@ -170,5 +182,7 @@ export async function exportToFile(
         }
       })()
     })
-  })
+  }) } finally {
+    if (commandPath) await fs.rm(commandPath, { force: true }).catch(() => undefined)
+  }
 }

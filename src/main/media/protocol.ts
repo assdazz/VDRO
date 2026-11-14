@@ -85,6 +85,12 @@ async function serveFile(filePath: string, request: Request): Promise<Response> 
     'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-store',
   })
+  // Only the packaged file renderer or local development renderer uses Web Audio.
+  const origin = request.headers.get('origin')
+  if (origin === 'null' || (origin && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin))) {
+    headers.set('Access-Control-Allow-Origin', origin)
+    headers.set('Vary', 'Origin')
+  }
 
   if (request.method === 'HEAD') {
     if (range) {

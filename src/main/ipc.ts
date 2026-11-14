@@ -32,6 +32,7 @@ import { buildFileName } from './filename'
 import { loadSettings, saveSettings } from './settings'
 import { getDecoderInfo } from './decoder'
 import { copyFileSafely, copyUniqueFile } from './files'
+import { registerAdjustmentIpc } from './adjustment'
 import {
   clearExtractedFiles,
   extractedRoot,
@@ -177,6 +178,7 @@ function validateExport(request: ExportRequest, info: MediaInfo): void {
 }
 
 export function registerIpc(): void {
+  registerAdjustmentIpc(getMediaEntry)
   ipcMain.handle('app:decoder-info', (event, mediaUrl: unknown) =>
     getDecoderInfo(event.sender.id, typeof mediaUrl === 'string' ? mediaUrl : undefined))
   ipcMain.handle('app:restart', async (_event, settings: unknown) => {

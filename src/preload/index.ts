@@ -28,6 +28,9 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 }
 
 const api: VdroApi = {
+  renderAdjustment: (request) => ipcRenderer.invoke('adjustment:render', request),
+  cancelAdjustment: (jobId) => ipcRenderer.invoke('adjustment:cancel', jobId),
+  onAdjustmentProgress: (callback) => subscribe('adjustment:progress', callback),
   getDecoderInfo: (mediaUrl) => ipcRenderer.invoke('app:decoder-info', mediaUrl),
   restartApp: (settings) => ipcRenderer.invoke('app:restart', settings),
   getSettings: () => ipcRenderer.invoke('settings:get') as Promise<AppSettings>,

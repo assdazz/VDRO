@@ -22,7 +22,7 @@ import type {
   ThemeMode,
 } from '@shared/types'
 
-type SettingsTab = 'output' | 'preview' | 'interface' | 'data' | 'shortcuts' | 'about'
+type SettingsTab = 'adjustment' | 'output' | 'preview' | 'interface' | 'data' | 'shortcuts' | 'about'
 
 interface SettingsDialogProps {
   settings: AppSettings
@@ -39,6 +39,7 @@ interface SettingsDialogProps {
 
 const TABS: Array<{ id: SettingsTab; label: string }> = [
   { id: 'output', label: '输出' },
+  { id: 'adjustment', label: '音频调整' },
   { id: 'preview', label: '预览' },
   { id: 'interface', label: '界面' },
   { id: 'data', label: '数据' },
@@ -262,7 +263,7 @@ export function SettingsDialog({
             {tab === 'output' && (
               <section>
                 <h3>输出默认值</h3>
-                <p className="settings-hint">影响下一次提取；当前已提取片段不会改变。</p>
+                <p className="settings-hint">音频剪辑与音频调整共用。默认格式和音质同步到两页，页面内可单独修改；采样率、声道、保存方式和命名规则用于后续输出，已有结果不会改变。</p>
                 <SelectRow
                   label="默认输出格式"
                   value={settings.outputFormat}
@@ -388,6 +389,16 @@ export function SettingsDialog({
               </section>
             )}
 
+            {tab === 'adjustment' && (
+              <section>
+                <h3>音频调整默认值</h3>
+                <p className="settings-hint">共振峰和削波保护用于下次导入音频或点击“恢复参数”；标记吸附默认开关用于下次导入，吸附距离立即生效。</p>
+                <ToggleRow label="默认保持人声共振峰" description="声音变高，但尽量保留原来的嗓音特点。若想要保留人声特点，可以打开此选项。" checked={settings.adjustmentPreserveFormants} onChange={checked => onUpdate({ adjustmentPreserveFormants: checked })}/>
+                <ToggleRow label="默认防止音量削波" description="降低增益过大导致的过载失真风险。" checked={settings.adjustmentLimiter} onChange={checked => onUpdate({ adjustmentLimiter: checked })}/>
+                <ToggleRow label="默认开启标记吸附" description="选区边缘拖动到标记附近时自动对齐。" checked={settings.adjustmentSnap} onChange={checked => onUpdate({ adjustmentSnap: checked })}/>
+                <label className="settings-select-row"><span>标记吸附距离（像素）</span><input aria-label="标记吸附距离" type="number" min="2" max="24" step="1" value={settings.adjustmentSnapDistance} onChange={event => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) onUpdate({ adjustmentSnapDistance: Math.round(Math.max(2, Math.min(24, value))) }) }}/></label>
+              </section>
+            )}
             {tab === 'preview' && (
               <section>
                 <h3>预览与播放</h3>

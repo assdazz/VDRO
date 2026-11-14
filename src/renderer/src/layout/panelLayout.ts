@@ -24,7 +24,7 @@ export function containedPanelHeight(panel: HTMLElement, main: HTMLElement): num
   return Math.max(120, Math.floor(bottom - panel.getBoundingClientRect().top - reserved - 2))
 }
 
-export const LAYOUT_STORAGE_KEY = 'vdro.layout.v1'
+export const LAYOUT_STORAGE_KEY = 'vdro.layout.v2'
 
 export interface LayoutSettings {
   inspectorWidth: number

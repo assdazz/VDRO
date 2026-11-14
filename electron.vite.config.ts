@@ -8,7 +8,7 @@ import react from '@vitejs/plugin-react'
 // must never ship in the packaged renderer. This plugin rewrites the
 // Content-Security-Policy meta at build time only, leaving dev untouched.
 const PROD_CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' vdro-media:; connect-src 'self' vdro-media:;"
+  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' vdro-media:; connect-src 'self' vdro-media:;"
 
 const hardenCsp: Plugin = {
   name: 'vdro-harden-csp',

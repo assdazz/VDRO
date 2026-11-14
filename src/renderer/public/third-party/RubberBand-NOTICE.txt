@@ -1,0 +1,7 @@
+Rubber Band 3.3.0, WebAssembly bindings rubberband-wasm 3.3.0.
+Copyright Particular Programs Ltd and contributors; bindings Dani Biro and contributors.
+GPL component; see RubberBand-LICENSE.txt.
+Library source: https://breakfastquay.com/files/releases/rubberband-3.3.0.tar.bz2
+Bindings and build instructions: https://github.com/Daninet/rubberband-wasm
+Exact package: https://registry.npmjs.org/rubberband-wasm/-/rubberband-wasm-3.3.0.tgz
+No changes to the upstream WASM binary. VDRO worklet adapter is in src/renderer/src/adjustment/rubberband.worklet.ts.

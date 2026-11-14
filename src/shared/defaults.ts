@@ -1,6 +1,10 @@
 import type { AppSettings } from './types'
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
+  adjustmentPreserveFormants: false,
+  adjustmentLimiter: true,
+  adjustmentSnap: true,
+  adjustmentSnapDistance: 8,
   decoderMode: 'auto',
   outputFormat: 'mp3',
   outputQuality: 192,

@@ -124,6 +124,10 @@ export interface ShortcutSettings {
 }
 
 export interface AppSettings {
+  adjustmentPreserveFormants: boolean
+  adjustmentLimiter: boolean
+  adjustmentSnap: boolean
+  adjustmentSnapDistance: number
   decoderMode: 'auto' | 'software'
   outputFormat: ExportFormat
   outputQuality: OutputQualitySetting
@@ -174,6 +178,9 @@ export interface AppInfo {
 }
 
 export interface VdroApi {
+  renderAdjustment: (request: AdjustmentRequest) => Promise<ExtractedClip>
+  cancelAdjustment: (jobId: string) => Promise<void>
+  onAdjustmentProgress: (callback: (event: { jobId: string; progress: number }) => void) => () => void
   getDecoderInfo: (mediaUrl?: string) => Promise<DecoderInfo>
   restartApp: (settings: AppSettings) => Promise<void>
   getSettings: () => Promise<AppSettings>
@@ -207,6 +214,28 @@ export interface VdroApi {
   onExportDone: (callback: (payload: ExportDone) => void) => () => void
   onExportError: (callback: (payload: ExportError) => void) => () => void
   onExportCancelled: (callback: (payload: ExportCancelled) => void) => () => void
+}
+
+export interface AudioAdjustment {
+  pitchPoints?: PitchPoint[]
+  semitones: number
+  gainDb: number
+  fadeIn: number
+  fadeOut: number
+  curve: 'tri' | 'qsin' | 'exp'
+  preserveFormants: boolean
+  limiter: boolean
+}
+
+export interface PitchPoint {
+  id: string
+  time: number
+  semitones: number
+}
+
+export interface AdjustmentRequest extends ExportRequest {
+  jobId: string
+  effects: AudioAdjustment
 }
 
 export interface DecoderInfo {

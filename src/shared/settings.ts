@@ -51,6 +51,10 @@ export function sanitizeSettings(input: unknown): AppSettings {
       : DEFAULT_SETTINGS.persistExtracted)
 
   return {
+    adjustmentPreserveFormants: typeof value.adjustmentPreserveFormants === 'boolean' ? value.adjustmentPreserveFormants : DEFAULT_SETTINGS.adjustmentPreserveFormants,
+    adjustmentLimiter: typeof value.adjustmentLimiter === 'boolean' ? value.adjustmentLimiter : DEFAULT_SETTINGS.adjustmentLimiter,
+    adjustmentSnap: typeof value.adjustmentSnap === 'boolean' ? value.adjustmentSnap : DEFAULT_SETTINGS.adjustmentSnap,
+    adjustmentSnapDistance: typeof value.adjustmentSnapDistance === 'number' && Number.isFinite(value.adjustmentSnapDistance) ? Math.round(Math.min(24, Math.max(2, value.adjustmentSnapDistance))) : DEFAULT_SETTINGS.adjustmentSnapDistance,
     decoderMode: value.decoderMode === 'software' ? 'software' : 'auto',
     outputFormat: oneOf<ExportFormat>(
       value.outputFormat,
