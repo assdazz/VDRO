@@ -18,7 +18,7 @@ import type {
 } from '@shared/types'
 import { sanitizeSettings } from '@shared/settings'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
-import { translateDom, translateUiText } from './i18n'
+import { translateUiText } from './i18n'
 import './clip-editor.css'
 import { PageTabs } from './PageTabs'
 import { useMediaPreview } from './playback/useMediaPreview'
@@ -808,7 +808,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       if (duration <= 0 || width <= 0) return
 
       const fitPxPerSec = width / duration
-      const factor = clamp(nextFactor, 1, 16)
+      const factor = clamp(nextFactor, 1, 32)
       const nextPxPerSec = fitPxPerSec * factor
       const currentPxPerSec = zoomPxPerSec > 0 ? zoomPxPerSec : fitPxPerSec
       const centerTime = (wave.getScroll() + width / 2) / currentPxPerSec
@@ -1729,23 +1729,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     media?.id,
   ])
 
-  useEffect(() => {
-    if (!settingsLoaded) return
-    const root = appRootRef.current
-    if (!root) return
 
-    const apply = (): void => translateDom(root, settings.language)
-    apply()
-    const observer = new MutationObserver(apply)
-    observer.observe(root, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-      attributes: true,
-      attributeFilter: ['title', 'aria-label', 'placeholder'],
-    })
-    return () => observer.disconnect()
-  }, [settings.language, settingsLoaded, settingsOpen])
 
   useEffect(() => {
     if (!settingsLoaded) return
@@ -1953,7 +1937,6 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       style={
         {
           ...PANEL_CSS,
-          '--vd-font-scale': settings.fontScale / 100,
         } as CSSProperties
       }
       onDragEnter={(event) => {
@@ -2577,7 +2560,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
               <button
                 className="zoom-btn"
                 type="button"
-                disabled={!peaks || zoomFactor >= 16}
+                disabled={!peaks || zoomFactor >= 32}
                 onClick={() => applyZoom(zoomFactor * 1.5)}
               >
                 放大
@@ -2590,6 +2573,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
               >
                 重置
               </button>
+              <output className="waveform-zoom-factor" aria-label="当前波形缩放倍率">{zoomFactor.toFixed(1)}×</output>
             </div>
             </div>
               </div>
