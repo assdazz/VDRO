@@ -15,6 +15,6 @@
 
 SHA256：DCC36B38DF0CE57BF6AA0BF4E003E7355D2F815F5984D4FAB772CDA413F44FC3
 
-Windows x64，每用户 NSIS 安装程序，未签名。类型检查、生产构建、归档资源检查通过；打包后的应用已通过读取音频、生成波形与导出测试。本次未执行完整安装及卸载。
+Windows x64，每用户 NSIS 安装程序，未签名。
 
-实时试听与 FFmpeg 导出采用不同处理路径，音色可能略有差异。第三方组件许可见 docs/rubberband-migration.md 与 src/renderer/public/third-party；项目源代码许可不能代替第三方组件许可。
+实时试听与 FFmpeg 导出采用不同处理路径，音色可能略有差异。第三方组件许可见[音频引擎与第三方许可](audio-engine.md)及[第三方许可文件](../src/renderer/public/third-party/)。

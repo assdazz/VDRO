@@ -13,6 +13,7 @@ import type {
   TempRetentionDays,
   TempSizeLimitMB,
   ThemeMode,
+  UiVersion,
 } from './types'
 import { DEFAULT_APP_SETTINGS as DEFAULT_SETTINGS } from './defaults'
 
@@ -40,6 +41,18 @@ export function sanitizeSettings(input: unknown): AppSettings {
     value.shortcuts && typeof value.shortcuts === 'object'
       ? (value.shortcuts as Partial<AppSettings['shortcuts']>)
       : {}
+  const baseShortcuts = {
+    play: asString(shortcuts.play, DEFAULT_SETTINGS.shortcuts.play),
+    setIn: asString(shortcuts.setIn, DEFAULT_SETTINGS.shortcuts.setIn),
+    setOut: asString(shortcuts.setOut, DEFAULT_SETTINGS.shortcuts.setOut),
+    seekBack: asString(shortcuts.seekBack, DEFAULT_SETTINGS.shortcuts.seekBack),
+    seekForward: asString(shortcuts.seekForward, DEFAULT_SETTINGS.shortcuts.seekForward),
+  }
+  const boundKeys = Object.values(baseShortcuts)
+  const selectionKey = asString(shortcuts.selectTool, DEFAULT_SETTINGS.shortcuts.selectTool)
+  const selectTool = boundKeys.includes(selectionKey) ? '' : selectionKey
+  const splitKey = asString(shortcuts.splitTool, DEFAULT_SETTINGS.shortcuts.splitTool)
+  const splitTool = boundKeys.includes(splitKey) || splitKey === selectTool ? '' : splitKey
   const persistLibrary =
     typeof value.persistLibrary === 'boolean'
       ? value.persistLibrary
@@ -74,6 +87,7 @@ export function sanitizeSettings(input: unknown): AppSettings {
     channels: value.channels === 1 ? 1 : 2,
     saveMode: oneOf<SaveMode>(value.saveMode, ['ask', 'fixed'], DEFAULT_SETTINGS.saveMode),
     saveDirectory: asString(value.saveDirectory, ''),
+    mediaDirectory: asString(value.mediaDirectory, DEFAULT_SETTINGS.mediaDirectory),
     autoSelectExtracted:
       typeof value.autoSelectExtracted === 'boolean'
         ? value.autoSelectExtracted
@@ -130,6 +144,7 @@ export function sanitizeSettings(input: unknown): AppSettings {
       typeof value.sidebarCollapsed === 'boolean'
         ? value.sidebarCollapsed
         : DEFAULT_SETTINGS.sidebarCollapsed,
+    uiVersion: oneOf<UiVersion>(value.uiVersion, ['legacy', 'modern'], DEFAULT_SETTINGS.uiVersion),
     theme: oneOf<ThemeMode>(
       value.theme,
       ['dark', 'oled', 'acrylic'],
@@ -188,15 +203,6 @@ export function sanitizeSettings(input: unknown): AppSettings {
     ),
     persistLibrary,
     persistExtracted,
-    shortcuts: {
-      play: asString(shortcuts.play, DEFAULT_SETTINGS.shortcuts.play),
-      setIn: asString(shortcuts.setIn, DEFAULT_SETTINGS.shortcuts.setIn),
-      setOut: asString(shortcuts.setOut, DEFAULT_SETTINGS.shortcuts.setOut),
-      seekBack: asString(shortcuts.seekBack, DEFAULT_SETTINGS.shortcuts.seekBack),
-      seekForward: asString(
-        shortcuts.seekForward,
-        DEFAULT_SETTINGS.shortcuts.seekForward,
-      ),
-    },
+    shortcuts: { ...baseShortcuts, selectTool, splitTool },
   }
 }

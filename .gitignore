@@ -25,3 +25,11 @@ zoom-analysis.png
 *.mp3
 *.m4a
 *.flac
+
+# Local development instructions and design/process records
+/AGENTS.md
+/reference/
+/docs/architecture.md
+/docs/clip-redesign.md
+/docs/panel-layout.md
+/docs/rubberband-migration.md

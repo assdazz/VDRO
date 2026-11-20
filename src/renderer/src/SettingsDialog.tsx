@@ -3,6 +3,7 @@ import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { DecoderSettings } from './DecoderSettings'
 import type { JSX, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { translateUiText } from './i18n'
+import { SHORTCUT_LABELS, shortcutLabel } from './shortcutLabels'
 import type {
   AccentColor,
   AppInfo,
@@ -20,6 +21,7 @@ import type {
   TempRetentionDays,
   TempSizeLimitMB,
   ThemeMode,
+  UiVersion,
 } from '@shared/types'
 
 type SettingsTab = 'adjustment' | 'output' | 'preview' | 'interface' | 'data' | 'shortcuts' | 'about'
@@ -60,14 +62,6 @@ const FILENAME_TOKENS: Array<{ token: string; label: string }> = [
   { token: '{ext}', label: '扩展名' },
 ]
 
-const SHORTCUT_LABELS: Array<{ key: keyof ShortcutSettings; label: string }> = [
-  { key: 'play', label: '播放 / 暂停' },
-  { key: 'setIn', label: '设为起始点' },
-  { key: 'setOut', label: '设为结束点' },
-  { key: 'seekBack', label: '后退' },
-  { key: 'seekForward', label: '前进' },
-]
-
 function resolutionLabel(value: PreviewResolutionSetting): string {
   if (value === 'follow') return '跟随源'
   if (value === 1440) return '2K'
@@ -81,13 +75,6 @@ function fpsLabel(value: PreviewFpsSetting): string {
 
 function qualityLabel(value: OutputQualitySetting): string {
   return value === 'native' ? '原生' : `${value} kbps`
-}
-
-function shortcutLabel(value: string): string {
-  if (value === 'ArrowLeft') return '←'
-  if (value === 'ArrowRight') return '→'
-  if (value === 'Space') return 'Space'
-  return value
 }
 
 function normalizeShortcut(event: ReactKeyboardEvent): string {
@@ -392,11 +379,11 @@ export function SettingsDialog({
             {tab === 'adjustment' && (
               <section>
                 <h3>音频调整默认值</h3>
-                <p className="settings-hint">共振峰和削波保护用于下次导入音频或点击“恢复参数”；标记吸附默认开关用于下次导入，吸附距离立即生效。</p>
+                <p className="settings-hint">共振峰和削波保护用于新片段或点击“恢复参数”时，吸附距离即时生效。</p>
                 <ToggleRow label="默认保持人声共振峰" description="声音变高，但尽量保留原来的嗓音特点。若想要保留人声特点，可以打开此选项。" checked={settings.adjustmentPreserveFormants} onChange={checked => onUpdate({ adjustmentPreserveFormants: checked })}/>
                 <ToggleRow label="默认防止音量削波" description="降低增益过大导致的过载失真风险。" checked={settings.adjustmentLimiter} onChange={checked => onUpdate({ adjustmentLimiter: checked })}/>
-                <ToggleRow label="默认开启标记吸附" description="选区边缘拖动到标记附近时自动对齐。" checked={settings.adjustmentSnap} onChange={checked => onUpdate({ adjustmentSnap: checked })}/>
-                <label className="settings-select-row"><span>标记吸附距离（像素）</span><input aria-label="标记吸附距离" type="number" min="2" max="24" step="1" value={settings.adjustmentSnapDistance} onChange={event => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) onUpdate({ adjustmentSnapDistance: Math.round(Math.max(2, Math.min(24, value))) }) }}/></label>
+                <ToggleRow label="默认开启吸附对齐" description="移动或裁剪片段时会吸附到片段边缘与播放头。裁剪时也可吸附到音高标记。" checked={settings.adjustmentSnap} onChange={checked => onUpdate({ adjustmentSnap: checked })}/>
+                <label className="settings-select-row"><span>吸附距离（像素）</span><input aria-label="吸附距离" type="number" min="2" max="24" step="1" value={settings.adjustmentSnapDistance} onChange={event => { const value = event.target.valueAsNumber; if (Number.isFinite(value)) onUpdate({ adjustmentSnapDistance: Math.round(Math.max(2, Math.min(24, value))) }) }}/></label>
               </section>
             )}
             {tab === 'preview' && (
@@ -524,6 +511,14 @@ export function SettingsDialog({
                 <h3>界面与布局</h3>
                 <SelectRow
                   label="主题"
+                  value={settings.uiVersion}
+                  onChange={(value) => onUpdate({ uiVersion: value as UiVersion })}
+                >
+                  <option value="legacy">旧版本</option>
+                  <option value="modern">新版本</option>
+                </SelectRow>
+                <SelectRow
+                  label="配色模式"
                   value={settings.theme}
                   onChange={(value) => onUpdate({ theme: value as ThemeMode })}
                 >

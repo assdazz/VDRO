@@ -88,6 +88,7 @@ export async function probeMedia(filePath: string): Promise<MediaInfo> {
     duration: Number.isFinite(duration) ? duration : 0,
     formatName: format.format_long_name ?? format.format_name ?? path.extname(filePath),
     size: Number(format.size ?? fileStat.size),
+    modifiedAt: fileStat.mtimeMs,
     audioStreams,
     videoStreams,
   }

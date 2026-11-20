@@ -8,9 +8,10 @@ import { exportToFile } from './media/export'
 import { ffmpegPath, ffprobePath } from './media/binaries'
 import { registerMediaProtocol } from './media/protocol'
 import { loadSettings } from './settings'
-import { cleanupExtractedByPolicy, cleanupExtractedOrphans, clearExtractedFiles } from './storage'
+import { cleanupExtractedByPolicy, cleanupExtractedOrphans, loadStoredExtracted, saveStoredExtracted } from './storage'
 import { attachWindowStatePersistence, loadWindowState } from './windowState'
 import type { AppSettings } from '../shared/types'
+import { TITLE_BAR_HEIGHT } from '../shared/windowChrome'
 import { configureDecoder, monitorDecoders } from './decoder'
 
 // Include Electron's time before evaluating this entry point in the measurement.
@@ -79,6 +80,14 @@ function createWindow(settings: AppSettings): BrowserWindow {
     show: !screenshotArg,
     autoHideMenuBar: true,
     title: 'VDRO',
+    ...(process.platform === 'win32' ? {
+      titleBarStyle: 'hidden' as const,
+      titleBarOverlay: {
+        color: '#00000000',
+        symbolColor: '#f5f5fa',
+        height: Math.round(TITLE_BAR_HEIGHT * settings.uiScale / 100),
+      },
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -174,15 +183,15 @@ async function runSmoke(filePath: string): Promise<void> {
 
 app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return
+  await fs.rm(path.join(app.getPath('userData'), 'session-assets'), { recursive: true, force: true }).catch(() => undefined)
   app.setAppUserModelId('top.vdro.app')
   Menu.setApplicationMenu(null)
   const settings = await loadSettings()
   logStartup('settings-loaded')
   if (!settings.persistExtracted) {
-    // Extracted clips are session-scoped here: the metadata index is deleted,
-    // so any leftover files would become untracked orphans that can never be
-    // listed or deleted from the UI. Clear the index and the files together.
-    await clearExtractedFiles()
+    const clips = await loadStoredExtracted()
+    await saveStoredExtracted(clips.filter(clip => clip.projectId))
+    await cleanupExtractedOrphans()
   } else if (settings.cleanTempOnStartup) {
     await cleanupExtractedOrphans()
     await cleanupExtractedByPolicy(

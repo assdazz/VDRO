@@ -2,14 +2,15 @@ import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { ExportFormat } from '../../shared/types'
+import type { AudioAdjustment, ExportFormat, MixTrackRequest } from '../../shared/types'
 import { ffmpegPath } from './binaries'
 import { replaceFile } from '../files'
-import type { AudioAdjustment } from '../../shared/types'
 import { adjustmentFilters, pitchCommands } from './adjustmentFilters'
 
 export interface ExportFileOptions {
   effects?: AudioAdjustment
+  reversed?: boolean
+  inputStart?: number
   start: number
   end: number
   format: ExportFormat
@@ -33,7 +34,13 @@ export const EXTENSIONS: Record<ExportFormat, string> = {
   flac: 'flac',
 }
 
-function codecArgs(options: ExportFileOptions): string[] {
+type AudioEncoding = Pick<ExportFileOptions, 'format' | 'sampleRate' | 'channels' | 'bitrate'>
+
+function reverseFilters(duration: number) {
+  return [`apad=whole_dur=${duration}`, `atrim=duration=${duration}`, 'areverse', 'asetpts=PTS-STARTPTS']
+}
+
+function codecArgs(options: AudioEncoding): string[] {
   switch (options.format) {
     case 'wav':
       return ['-c:a', 'pcm_s16le']
@@ -69,19 +76,14 @@ export async function exportToFile(
   if (!Number.isFinite(duration) || duration <= 0) {
     throw new Error('片段时长无效')
   }
+  if (options.reversed) filters.unshift(...reverseFilters(duration), 'apad=pad_dur=0.25')
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true })
-  const tempPath = `${outputPath}.${randomUUID()}.part`
   const commandPath = commandName ? path.join(path.dirname(outputPath), commandName) : undefined
-  if (commandPath) await fs.writeFile(commandPath, commands, 'utf8')
-
-  const args = [
-    '-hide_banner',
-    '-nostdin',
-    '-v',
-    'error',
+  const inputArgs = [
     '-ss',
-    options.start.toFixed(6),
+    (options.inputStart ?? options.start).toFixed(6),
+    ...(options.reversed ? ['-t', duration.toFixed(6)] : []),
     '-i',
     sourcePath,
     '-t',
@@ -90,6 +92,81 @@ export async function exportToFile(
     `0:${options.audioStreamIndex}`,
     '-vn',
     ...(filters.length ? ['-af', filters.join(',')] : []),
+  ]
+  try {
+    if (commandPath) await fs.writeFile(commandPath, commands, 'utf8')
+    await runAudioExport(inputArgs, outputPath, options, duration, onProgress, signal)
+  } finally {
+    if (commandPath) await fs.rm(commandPath, { force: true }).catch(() => undefined)
+  }
+}
+
+export async function exportMixToFile(
+  tracks: (MixTrackRequest & { filePath: string; inputStart: number })[],
+  outputPath: string,
+  options: AudioEncoding,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  outputPath = path.resolve(outputPath)
+  const directory = path.dirname(outputPath)
+  await fs.mkdir(directory, { recursive: true })
+  const commandFiles: string[] = []
+  try {
+    const inputs: string[] = []
+    const graph: string[] = []
+    const layout = options.channels === 1 ? 'mono' : 'stereo'
+    const audioFormat = `aformat=sample_fmts=fltp:sample_rates=${options.sampleRate}:channel_layouts=${layout}`
+    for (const [index, track] of tracks.entries()) {
+      const duration = +(track.end - track.start).toFixed(6)
+      const offset = +track.offset.toFixed(6)
+      const pitchFilter = `rubberband@track${index}`
+      const commands = pitchCommands(track.effects, track.start, duration, pitchFilter)
+      const commandName = commands ? `${randomUUID()}.pitch` : undefined
+      const filters = adjustmentFilters(track.effects, duration, track.start, commandName, pitchFilter)
+      if (commandName) {
+        const commandFile = path.join(directory, commandName)
+        commandFiles.push(commandFile)
+        await fs.writeFile(commandFile, commands, 'utf8')
+      }
+      inputs.push('-ss', track.inputStart.toFixed(6), '-t', duration.toFixed(6), '-i', path.resolve(track.filePath))
+      const trackOutput = offset > 0 ? `clip${index}` : `track${index}`
+      // Supply lookahead after the trim so Rubber Band can emit the last samples of the clip.
+      const inputFilters = track.reversed ? reverseFilters(duration).join(',') : `atrim=duration=${duration}`
+      graph.push(`[${index}:${track.audioStreamIndex}]asetpts=PTS-STARTPTS,${inputFilters},apad=pad_dur=0.25,${filters.join(',')},${audioFormat},apad,atrim=duration=${duration},asetpts=N/SR/TB[${trackOutput}]`)
+      if (offset > 0) {
+        graph.push(`anullsrc=r=${options.sampleRate}:cl=${layout}:d=${offset},${audioFormat}[delay${index}]`)
+        graph.push(`[delay${index}][${trackOutput}]concat=n=2:v=0:a=1[track${index}]`)
+      }
+    }
+    const streams = tracks.map((_, index) => `[track${index}]`).join('')
+    graph.push(`${streams}amix=inputs=${tracks.length}:duration=longest:normalize=0,alimiter=limit=0.97:level=false:latency=true[mix]`)
+    const duration = Math.max(...tracks.map(track => track.offset + track.end - track.start))
+    const graphPath = path.join(directory, randomUUID() + '.filters')
+    commandFiles.push(graphPath)
+    await fs.writeFile(graphPath, graph.join(';'), 'utf8')
+    await runAudioExport([...inputs, '-filter_complex_script', graphPath, '-map', '[mix]'], outputPath, options, duration, onProgress, signal)
+  } finally {
+    await Promise.all(commandFiles.map(file => fs.rm(file, { force: true }).catch(() => undefined)))
+  }
+}
+
+function runAudioExport(
+  inputArgs: string[],
+  outputPath: string,
+  options: AudioEncoding,
+  duration: number,
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new Error('CANCELLED'))
+  const tempPath = `${outputPath}.${randomUUID()}.part`
+  const args = [
+    '-hide_banner',
+    '-nostdin',
+    '-v',
+    'error',
+    ...inputArgs,
     '-ac',
     String(options.channels),
     '-ar',
@@ -104,7 +181,7 @@ export async function exportToFile(
     tempPath,
   ]
 
-  try { return await new Promise<void>((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     const child = spawn(ffmpegPath, args, {
       windowsHide: true,
       cwd: path.dirname(outputPath),
@@ -182,7 +259,5 @@ export async function exportToFile(
         }
       })()
     })
-  }) } finally {
-    if (commandPath) await fs.rm(commandPath, { force: true }).catch(() => undefined)
-  }
+  })
 }

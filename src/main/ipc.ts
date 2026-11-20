@@ -19,6 +19,7 @@ import type {
   SaveExtractedResult,
   StoredLibraryEntry,
 } from '../shared/types'
+import { TITLE_BAR_HEIGHT } from '../shared/windowChrome'
 import {
   clearPeaksCache,
   getCachedPeaks,
@@ -143,6 +144,18 @@ function senderWindow(event: IpcMainInvokeEvent): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0] ?? null
 }
 
+async function pickMediaFiles(event: IpcMainInvokeEvent, defaultPath: unknown, multiple = false): Promise<string[]> {
+  const window = senderWindow(event)
+  const options: Electron.OpenDialogOptions = {
+    title: await dialogTitle('打开音频或视频', 'Open audio or video'),
+    defaultPath: typeof defaultPath === 'string' && defaultPath ? defaultPath : undefined,
+    properties: multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+    filters: MEDIA_FILTERS,
+  }
+  const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+  return result.canceled ? [] : result.filePaths
+}
+
 function sendToWindow(
   window: BrowserWindow | null,
   channel: string,
@@ -186,23 +199,24 @@ export function registerIpc(): void {
     app.relaunch()
     app.quit()
   })
-  ipcMain.handle('media:open', async (event) => {
-    const window = senderWindow(event)
-    const options: Electron.OpenDialogOptions = {
-      title: await dialogTitle('打开音频或视频', 'Open audio or video'),
-      properties: ['openFile'],
-      filters: MEDIA_FILTERS,
-    }
-    const result = window
-      ? await dialog.showOpenDialog(window, options)
-      : await dialog.showOpenDialog(options)
-    if (result.canceled || result.filePaths.length === 0) return null
-    return await importMedia(result.filePaths[0])
+  ipcMain.handle('media:open', async (event, defaultPath: unknown) => {
+    const [filePath] = await pickMediaFiles(event, defaultPath)
+    return filePath ? await importMedia(filePath) : null
   })
+  ipcMain.handle('adjustment:pick-tracks', (event, defaultPath: unknown) => pickMediaFiles(event, defaultPath, true))
 
-  ipcMain.handle('media:import-path', async (_event, filePath: unknown) => {
+  ipcMain.handle('media:import-path', async (_event, filePath: unknown, projectId?: string) => {
     if (typeof filePath !== 'string' || !filePath) {
       throw new Error('文件路径无效')
+    }
+    if (projectId && samePath(path.dirname(filePath), extractedRoot())) {
+      if (projectId !== '@session' && !/^[\w-]{1,100}$/.test(projectId)) throw new Error('文件路径无效')
+      const directory = projectId === '@session' ? path.join(app.getPath('userData'), 'session-assets')
+        : path.join(app.getPath('userData'), 'project-assets', projectId)
+      await fs.mkdir(directory, { recursive: true })
+      const destination = path.join(directory, path.basename(filePath))
+      await copyFileSafely(filePath, destination)
+      return importMedia(destination)
     }
     return await importMedia(filePath)
   })
@@ -475,10 +489,12 @@ export function registerIpc(): void {
     userDataPath: app.getPath('userData'),
   }))
 
-  ipcMain.handle('app:choose-directory', async (event, defaultPath: unknown) => {
+  ipcMain.handle('app:choose-directory', async (event, defaultPath: unknown, purpose: unknown) => {
     const window = senderWindow(event)
     const options: Electron.OpenDialogOptions = {
-      title: await dialogTitle('选择默认保存目录', 'Choose default save folder'),
+      title: purpose === 'media'
+        ? await dialogTitle('选择素材文件夹', 'Choose media folder')
+        : await dialogTitle('选择默认保存目录', 'Choose default save folder'),
       defaultPath: typeof defaultPath === 'string' && defaultPath ? defaultPath : undefined,
       properties: ['openDirectory', 'createDirectory'],
     }
@@ -520,8 +536,15 @@ export function registerIpc(): void {
     await saveStoredLibrary(sanitized)
   })
 
-  ipcMain.handle('extracted:load', async () => {
-    const stored = await loadStoredExtracted()
+  let extractedWrite = Promise.resolve()
+  function updateExtracted(operation: () => Promise<void>) {
+    const write = extractedWrite.then(operation)
+    extractedWrite = write.catch(() => undefined)
+    return write
+  }
+  ipcMain.handle('extracted:load', async (_event, projectId?: string) => {
+    await extractedWrite
+    const stored = (await loadStoredExtracted()).filter(clip => clip.projectId === projectId)
     const clips: ExtractedClip[] = []
 
     for (const clip of stored) {
@@ -538,18 +561,21 @@ export function registerIpc(): void {
     return clips
   })
 
-  ipcMain.handle('extracted:save', async (_event, clips: unknown) => {
+  ipcMain.handle('extracted:save', async (_event, clips: unknown, projectId?: string) => {
     if (!Array.isArray(clips)) return
-    await saveStoredExtracted(clips as ExtractedClip[])
+    await updateExtracted(async () => {
+      const others = (await loadStoredExtracted()).filter(clip => clip.projectId !== projectId)
+      await saveStoredExtracted([...others, ...clips.map(clip => ({ ...clip, projectId }))])
+    })
   })
 
-  ipcMain.handle('app:clear-temp', async () => {
+  ipcMain.handle('app:clear-temp', () => updateExtracted(async () => {
     const stored = await loadStoredExtracted()
     for (const clip of stored) {
       unregisterMediaFile(clip.id)
     }
     await clearExtractedFiles()
-  })
+  }))
 
   ipcMain.handle('app:clear-peaks-cache', async () => {
     await clearPeaksCache()
@@ -562,7 +588,9 @@ export function registerIpc(): void {
     if (!window || window.isDestroyed()) return
     const numeric = typeof factor === 'number' ? factor : Number(factor)
     if (!Number.isFinite(numeric)) return
-    window.webContents.setZoomFactor(Math.min(1.5, Math.max(0.75, numeric)))
+    const scale = Math.min(1.5, Math.max(0.75, numeric))
+    window.webContents.setZoomFactor(scale)
+    if (process.platform === 'win32') window.setTitleBarOverlay({ height: Math.round(TITLE_BAR_HEIGHT * scale) })
   })
 
   ipcMain.handle('window:set-always-on-top', async (event, enabled: unknown) => {

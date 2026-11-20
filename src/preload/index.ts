@@ -29,6 +29,8 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 
 const api: VdroApi = {
   renderAdjustment: (request) => ipcRenderer.invoke('adjustment:render', request),
+  pickMixTracks: (defaultPath) => ipcRenderer.invoke('adjustment:pick-tracks', defaultPath),
+  renderMix: (request) => ipcRenderer.invoke('adjustment:mix', request),
   cancelAdjustment: (jobId) => ipcRenderer.invoke('adjustment:cancel', jobId),
   onAdjustmentProgress: (callback) => subscribe('adjustment:progress', callback),
   getDecoderInfo: (mediaUrl) => ipcRenderer.invoke('app:decoder-info', mediaUrl),
@@ -37,8 +39,8 @@ const api: VdroApi = {
   saveSettings: (settings: AppSettings) =>
     ipcRenderer.invoke('settings:save', settings) as Promise<void>,
   getAppInfo: () => ipcRenderer.invoke('app:info') as Promise<AppInfo>,
-  chooseDirectory: (defaultPath?: string) =>
-    ipcRenderer.invoke('app:choose-directory', defaultPath) as Promise<string | null>,
+  chooseDirectory: (defaultPath, purpose) =>
+    ipcRenderer.invoke('app:choose-directory', defaultPath, purpose) as Promise<string | null>,
   loadLibrary: () =>
     ipcRenderer.invoke('library:load') as Promise<{
       media: ImportedMedia[]
@@ -46,9 +48,9 @@ const api: VdroApi = {
     }>,
   saveLibrary: (entries: StoredLibraryEntry[]) =>
     ipcRenderer.invoke('library:save', entries) as Promise<void>,
-  loadExtracted: () => ipcRenderer.invoke('extracted:load') as Promise<ExtractedClip[]>,
-  saveExtractedClips: (clips: ExtractedClip[]) =>
-    ipcRenderer.invoke('extracted:save', clips) as Promise<void>,
+  loadExtracted: projectId => ipcRenderer.invoke('extracted:load', projectId) as Promise<ExtractedClip[]>,
+  saveExtractedClips: (clips: ExtractedClip[], projectId?: string) =>
+    ipcRenderer.invoke('extracted:save', clips, projectId) as Promise<void>,
   clearTempFiles: () => ipcRenderer.invoke('app:clear-temp') as Promise<void>,
   clearPeaksCache: () => ipcRenderer.invoke('app:clear-peaks-cache') as Promise<void>,
   getPeaksCacheInfo: () =>
@@ -60,9 +62,9 @@ const api: VdroApi = {
   setAlwaysOnTop: (enabled: boolean) =>
     ipcRenderer.invoke('window:set-always-on-top', enabled) as Promise<void>,
   openDataFolder: () => ipcRenderer.invoke('app:open-data-folder') as Promise<void>,
-  openFile: () => ipcRenderer.invoke('media:open') as Promise<ImportedMedia | null>,
-  importPath: (filePath: string) =>
-    ipcRenderer.invoke('media:import-path', filePath) as Promise<ImportedMedia>,
+  openFile: (defaultPath) => ipcRenderer.invoke('media:open', defaultPath) as Promise<ImportedMedia | null>,
+  importPath: (filePath: string, projectId?: string) =>
+    ipcRenderer.invoke('media:import-path', filePath, projectId) as Promise<ImportedMedia>,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   onOpenMedia: (callback: (media: ImportedMedia) => void) =>
     subscribe('app:open-media', callback),

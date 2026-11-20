@@ -24,7 +24,7 @@ win:
     rfc3161TimeStampServer: "http://timestamp.digicert.com"
 ```
 
-forceCodeSigning 使正式构建在未取得签名凭据时失败，避免悄悄产出未签名安装包。凭据准备好后再启用；本次没有改动生效配置。
+forceCodeSigning 使正式构建在未取得签名凭据时失败，避免悄悄产出未签名安装包。在签名凭据准备好后启用该配置。
 
 符合 Microsoft 云签名资格时，electron-builder 26 使用 win.azureSignOptions，并通过环境或构建系统注入身份授权信息。不要同时配置两个签名后端。
 

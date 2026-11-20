@@ -1,5 +1,5 @@
 import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { CSSProperties, DragEvent, JSX, PointerEvent as ReactPointerEvent } from 'react'
+import type { CSSProperties, Dispatch, DragEvent, JSX, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js'
@@ -20,10 +20,20 @@ import { sanitizeSettings } from '@shared/settings'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import { translateUiText } from './i18n'
 import './clip-editor.css'
-import { PageTabs } from './PageTabs'
+import { formatLibrarySize, formatTime, summary, IconFileAudio, IconFileVideo, MediaLibrary, MediaLibraryItem } from './MediaLibrary'
+import type { AppPage } from './PageTabs'
+import { VolumeIcon } from './VolumeIcon'
+import { TimelineToolPicker, useTimelineToolShortcuts, type TimelineTool } from './TimelineToolPicker'
+import { TimelineEditControls } from './TimelineEditControls'
+import { TimelinePlayheadHandle, type PlayheadDrag } from './TimelinePlayheadHandle'
+import { WaveformZoomControls } from './WaveformZoomControls'
+import { MissingMediaList } from './MissingMediaList'
+import { readDraft, saveDraft, reportProjectState } from './projectDraft'
+import { useTimelineHistoryShortcuts } from './useTimelineHistoryShortcuts'
+import { useEditHistory } from './useEditHistory'
 import { useMediaPreview } from './playback/useMediaPreview'
 import { usePanelLayout } from './layout/usePanelLayout'
-import { PANEL_CSS, DEFAULT_LAYOUT, MIN_VIDEO_AREA_HEIGHT, AUDIO_COLLAPSED_HEIGHT } from './layout/panelLayout'
+import { DEFAULT_LAYOUT, MIN_CLIP_TIME_HEIGHT, MIN_RESULTS_HEIGHT, MIN_TIMELINE_HEIGHT, MIN_VIDEO_PREVIEW_HEIGHT, PANEL_RESIZER_HEIGHT } from './layout/panelLayout'
 import { findClipSource, bindClipSource } from './mediaSources'
 const SettingsDialog = lazy(() => import('./SettingsDialog').then((module) => ({
   default: module.SettingsDialog,
@@ -71,18 +81,6 @@ const PREVIEW_RESOLUTIONS = [
 ]
 
 const PREVIEW_FPS = [30, 60, 120, 144]
-function formatTime(seconds: number, milliseconds = true): string {
-  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
-  const totalMs = Math.round(safe * 1000)
-  const ms = totalMs % 1000
-  const totalSeconds = Math.floor(totalMs / 1000)
-  const s = totalSeconds % 60
-  const m = Math.floor(totalSeconds / 60) % 60
-  const h = Math.floor(totalSeconds / 3600)
-  const base = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  return milliseconds ? `${base}.${String(ms).padStart(3, '0')}` : base
-}
-
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '—'
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
@@ -90,26 +88,21 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`
 }
 
-function formatLibrarySize(bytes: number): string {
-  const MB = 1024 * 1024
-  const GB = 1024 * MB
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0.00MB'
-  if (bytes < MB) return `${(bytes / MB).toFixed(2)}MB`
-  if (bytes < GB) return `${Math.round(bytes / MB)}MB`
-  return `${(bytes / GB).toFixed(2)}GB`
-}
-
-function summary(media: ImportedMedia): string {
-  const video = media.info.videoStreams[0]
-  const audio = media.info.audioStreams[0]
-  return [video?.codec, audio?.codec]
-    .filter(Boolean)
-    .map((value) => value!.toUpperCase())
-    .join(' · ')
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
+}
+
+const sameRange = (left: RegionRange, right: RegionRange) => left.start === right.start && left.end === right.end
+
+type ClipProject = { paths: string[]; current?: string; timelines: Record<string, ClipTimeline> }
+type ClipTimeline = { range: RegionRange; cuts: number[]; markers: number[] }
+const sameClipTimeline = (left: ClipTimeline, right: ClipTimeline) =>
+  left.cuts === right.cuts && left.markers === right.markers && sameRange(left.range, right.range)
+
+function rangeAtCut(time: number, cuts: number[], duration: number): RegionRange {
+  const next = cuts.findIndex(cut => cut > time)
+  return next < 0 ? { start: cuts.at(-1) ?? 0, end: duration }
+    : { start: cuts[next - 1] ?? 0, end: cuts[next] }
 }
 
 function errorMessage(error: unknown): string {
@@ -135,11 +128,45 @@ function rememberPeaks(
   }
 }
 
-export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsRequest, onSettingsChange }: { settingsRequest: number; onSettingsChange: (settings: AppSettings) => void; active: boolean; onNavigate: (page: 'clip' | 'adjust') => void; onAdjustClip: (clip: ExtractedClip) => void }): JSX.Element {
+interface ClipEditorProps {
+  projectId?: string
+  active: boolean
+  onNavigate: (page: AppPage) => void
+  onAdjustClip: (clip: ExtractedClip) => void
+  requestedMedia: { media: ImportedMedia } | null
+  onLibraryChange: (library: ImportedMedia[]) => void
+  onTitleChange: (value: { media: ImportedMedia | null; duration: number }) => void
+  settingsRequest: number
+  settings: AppSettings
+  setSettings: Dispatch<SetStateAction<AppSettings>>
+  onSettingsRead: (settings: AppSettings) => void
+  settingsLoaded: boolean
+  setSettingsLoaded: (loaded: boolean) => void
+}
+
+export default function ClipEditor({
+  projectId,
+  active,
+  onNavigate,
+  onAdjustClip,
+  requestedMedia,
+  onLibraryChange,
+  onTitleChange,
+  settingsRequest,
+  settings,
+  setSettings,
+  onSettingsRead,
+  settingsLoaded,
+  setSettingsLoaded,
+}: ClipEditorProps): JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null)
   const waveRef = useRef<HTMLDivElement>(null)
   const dragBoxRef = useRef<HTMLDivElement>(null)
+  const splitGuideRef = useRef<HTMLSpanElement>(null)
+  const timelineToolRef = useRef<TimelineTool>('select')
+  const [timelineTool, setTimelineTool] = useState<TimelineTool>('select')
   const waveSurferRef = useRef<WaveSurfer | null>(null)
+  const [waveCursor, setWaveCursor] = useState<HTMLDivElement | null>(null)
   const regionRef = useRef<RegionLike | null>(null)
   const regionRangeRef = useRef<RegionRange>({ start: 0, end: 0 })
   const peaksCacheRef = useRef(new Map<string, PeaksResult>())
@@ -168,6 +195,13 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   const appRootRef = useRef<HTMLDivElement>(null)
   const [media, setMedia] = useState<ImportedMedia | null>(null)
   const [library, setLibrary] = useState<ImportedMedia[]>([])
+  const libraryRef = useRef(library)
+  libraryRef.current = library
+  useEffect(() => () => {
+    for (const item of libraryRef.current) void window.vdro.releaseMedia(item.id).catch(() => undefined)
+  }, [])
+  const handledHomeMedia = useRef<typeof requestedMedia>(null)
+  useEffect(() => onLibraryChange(library), [library, onLibraryChange])
   const [libraryCollapsed, setLibraryCollapsed] = useState(false)
   const [libraryDrag, setLibraryDrag] = useState<LibraryDragState | null>(null)
   const [extractedClips, setExtractedClips] = useState<ExtractedClip[]>([])
@@ -186,12 +220,17 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   const [peaks, setPeaks] = useState<PeaksResult | null>(null)
   const [audioStreamIndex, setAudioStreamIndex] = useState<number | null>(null)
   const [duration, setDuration] = useState(0)
+  useEffect(() => onTitleChange({ media, duration }), [media, duration, onTitleChange])
   const [currentTime, setCurrentTime] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [previewing, setPreviewing] = useState(false)
   const [loop, setLoop] = useState(false)
   const [region, setRegion] = useState<RegionRange>({ start: 0, end: 0 })
-  const [format, setFormat] = useState<ExportFormat>('mp3')
+  const { present: clipTimeline, past: pastRanges, future: futureRanges, commit: recordTimeline, reset: resetTimeline,
+    undo: undoRange, redo: redoRange } = useEditHistory<ClipTimeline>({ range: { start: 0, end: 0 }, cuts: [], markers: [] }, sameClipTimeline)
+  const clipTimelineRef = useRef(clipTimeline)
+  clipTimelineRef.current = clipTimeline
+  const [format, setFormat] = useState<ExportFormat>(DEFAULT_APP_SETTINGS.outputFormat)
   const [sampleRate, setSampleRate] = useState(48000)
   const [channels, setChannels] = useState<1 | 2>(2)
   const [bitrate, setBitrate] = useState(192)
@@ -206,22 +245,25 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   const [zoomViewportWidth, setZoomViewportWidth] = useState(0)
   const [zoomMaxScroll, setZoomMaxScroll] = useState(0)
   const [zoomTrackWidth, setZoomTrackWidth] = useState(0)
-  const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS)
-  const [settingsLoaded, setSettingsLoaded] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   useEffect(() => { if (settingsRequest > 0) setSettingsOpen(true) }, [settingsRequest])
-  useEffect(() => { onSettingsChange(settings) }, [settings, onSettingsChange])
-  const { layout, setLayout, audioEditorHeight, setAudioEditorHeight, audioToggling, mainColumnRef, editorTopRef, workspaceRef, timelinePanelRef, extractedPanelRef, effectiveTimelineHeight, minimumEditorHeight, soloPanel, isPreviewSolo, isSoloSized, togglePanel, beginInspectorResize, beginTimelineResize, beginExtractedResize, beginSoloResize } = usePanelLayout(settings, settingsLoaded, job?.status)
+  const {
+    layout, setLayout, bodyRef, mainColumnRef, timelinePanelRef, dockRef, clipTimeRef,
+    togglePanel, beginInspectorResize, beginTimelineResize, beginExtractedResize,
+  } = usePanelLayout(settings, settingsLoaded)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+
+  const changeTimelineTool = useCallback((tool: TimelineTool) => {
+    timelineToolRef.current = tool
+    setTimelineTool(tool)
+    if (splitGuideRef.current) splitGuideRef.current.hidden = true
+  }, [])
+  useTimelineToolShortcuts(active && !layout.timelineCollapsed, settings.shortcuts, changeTimelineTool)
 
   const hasVideo = Boolean(media && media.info.videoStreams.length > 0)
   const sourceVideo = media?.info.videoStreams[0]
   const sourceAudio = media?.info.audioStreams.find((stream) => stream.index === audioStreamIndex)
   const clipDuration = Math.max(0, region.end - region.start)
-  const libraryBytes = library.reduce(
-    (total, item) => total + (Number.isFinite(item.info.size) ? item.info.size : 0),
-    0,
-  )
   const visibleDuration =
     zoomPxPerSec > 0 && zoomViewportWidth > 0
       ? zoomViewportWidth / zoomPxPerSec
@@ -265,6 +307,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   const canExtract = canExport && !extracting
   const canExtractFull =
     Boolean(media) && Boolean(peaks) && audioStreamIndex !== null && !extracting
+  const canEditTimeline = !!peaks && !loading && !extracting
   const isPreviewPlaying = playing || playingExtractedId !== null
   const clampedCurrentTime = Math.min(Math.max(currentTime, 0), duration || 0)
   const displayCurrentTime =
@@ -326,8 +369,81 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     setRegion(next)
   }, [])
 
+  const applyRegion = useCallback((next: RegionRange) => {
+    const current = regionRef.current
+    if (!current) return
+    setActiveExtractedClip(null)
+    current.setOptions(next)
+    const range = { start: current.start, end: current.end }
+    syncRegion(range)
+    return range
+  }, [syncRegion])
+
+  const recordRange = useCallback((range: RegionRange) => recordTimeline({ ...clipTimelineRef.current, range }), [recordTimeline])
+
+  const editRegion = useCallback((next: RegionRange) => {
+    const range = applyRegion(next)
+    if (range) recordRange(range)
+  }, [applyRegion, recordRange])
+
+  const [unavailablePaths, setUnavailablePaths] = useState<string[]>([])
+  const projectCurrent = useRef<string | undefined>(undefined)
+  const projectTimelines = useRef<Record<string, ClipTimeline>>({})
+  const timelineOwner = useRef('')
+  const [workspaceReady, setWorkspaceReady] = useState(false)
+  useEffect(() => {
+    if (!projectId || !workspaceReady) return
+    if (media && timelineOwner.current === media.filePath) projectTimelines.current[media.filePath] = clipTimeline
+    try {
+      saveDraft(projectId, 'clip', { paths: [...library.map(item => item.filePath), ...unavailablePaths], current: media?.filePath ?? projectCurrent.current, timelines: projectTimelines.current })
+    } catch { setError('无法保存项目，请重试。') }
+  }, [workspaceReady, projectId, media, library, clipTimeline, unavailablePaths])
+
+  useEffect(() => {
+    const guard = (event: Event) => { if (extracting || savingClipId) event.preventDefault() }
+    window.addEventListener('vdro:before-project-change', guard)
+    return () => window.removeEventListener('vdro:before-project-change', guard)
+  }, [extracting, savingClipId])
+
+  async function relinkClipAsset(path: string, choose: boolean) {
+    if (loading || extracting) return
+    setLoading(true)
+    let imported: ImportedMedia | null = null
+    try {
+      imported = choose ? await window.vdro.openFile(settings.mediaDirectory) : await window.vdro.importPath(path)
+      if (!imported) return
+      const stream = imported.info.audioStreams.find(item => item.isDefault) ?? imported.info.audioStreams[0]
+      if (!stream) throw new Error('该文件没有音轨')
+      const saved = projectTimelines.current[path]
+      if (saved && Math.max(saved.range.end, ...saved.cuts, ...saved.markers) > imported.info.duration + .001) {
+        throw new Error('替换素材时长不足，无法恢复原片段。')
+      }
+      const waveform = await window.vdro.getPeaks(imported.id, stream.index)
+      rememberPeaks(peaksCacheRef.current, imported.id, waveform)
+      if (saved) projectTimelines.current[imported.filePath] = saved
+      if (path !== imported.filePath) delete projectTimelines.current[path]
+      const recovered = imported
+      setLibrary(previous => [...previous.filter(item => item.filePath !== path), recovered])
+      setUnavailablePaths(previous => previous.filter(item => item !== path))
+      if (projectCurrent.current === path || !media) {
+        projectCurrent.current = recovered.filePath
+        await adoptMedia(recovered)
+      }
+      imported = null
+      setError(null)
+    } catch (cause) { setError(errorMessage(cause)) }
+    finally {
+      if (imported) void window.vdro.releaseMedia(imported.id).catch(() => undefined)
+      setLoading(false)
+    }
+  }
+
+  const mediaRequest = useRef(0)
+  useEffect(() => () => { mediaRequest.current++ }, [])
   const adoptMedia = useCallback(
-    async (next: ImportedMedia): Promise<void> => {
+    async (next: ImportedMedia): Promise<boolean> => {
+      timelineOwner.current = ''
+      const request = ++mediaRequest.current
       setLoading(true)
       setError(null)
       setPeaks(null)
@@ -355,6 +471,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
           next.info.audioStreams.find((stream) => stream.isDefault) ??
           next.info.audioStreams[0]
 
+        projectCurrent.current = next.filePath
         setMedia(next)
         setLibrary((previous) =>
           previous.some((item) => item.id === next.id) ? previous : [...previous, next],
@@ -369,30 +486,40 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
         if (!nextPeaks) {
           nextPeaks = await window.vdro.getPeaks(next.id, audio.index)
         }
+        if (request !== mediaRequest.current) return false
         rememberPeaks(peaksCacheRef.current, next.id, nextPeaks)
         setPeaks(nextPeaks)
         setDuration(nextPeaks.duration)
+        return true
       } catch (cause) {
+        if (request !== mediaRequest.current) return false
         setMedia(null)
         setPeaks(null)
         setAudioStreamIndex(null)
         setError(errorMessage(cause))
+        return false
       } finally {
-        setLoading(false)
+        if (request === mediaRequest.current) setLoading(false)
       }
     },
     [settings.previewMuted, settings.previewVolume],
   )
 
+  useEffect(() => {
+    if (!requestedMedia || handledHomeMedia.current === requestedMedia) return
+    handledHomeMedia.current = requestedMedia
+    void adoptMedia(requestedMedia.media)
+  }, [requestedMedia, adoptMedia])
+
   const handleOpen = useCallback(async (): Promise<void> => {
     setError(null)
     try {
-      const imported = await window.vdro.openFile()
+      const imported = await window.vdro.openFile(settings.mediaDirectory)
       if (imported) await adoptMedia(imported)
     } catch (cause) {
       setError(errorMessage(cause))
     }
-  }, [adoptMedia])
+  }, [adoptMedia, settings.mediaDirectory])
 
   const handleDrop = useCallback(
     async (event: DragEvent<HTMLDivElement>): Promise<void> => {
@@ -453,7 +580,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       height: 'auto',
       waveColor: '#585858',
       progressColor: '#a0a0a0',
-      cursorColor: '#faff69',
+      cursorColor: 'var(--vd-playhead)',
       cursorWidth: 2,
       barWidth: 2,
       barGap: 1,
@@ -506,16 +633,21 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       handleRegion(next)
     })
     regions.on('region-updated', (next) => {
+      if (pendingFrame) cancelAnimationFrame(pendingFrame)
+      pendingFrame = 0
       setActiveExtractedClip(null)
       bindRegionHandles(next)
       handleRegion(next)
+      recordRange(regionRangeRef.current)
     })
 
     // 框选手势：在波形任意位置按住拖动就重画选区，选区内部同样有效。
     // 拖动过程只画一层预览框，松手才真正建选区——不逐帧改插件实例，避免
     // 选区对象被替换后 setOptions 静默失效。
     const wrapper = waveSurfer.getWrapper()
+    setWaveCursor(wrapper.querySelector<HTMLDivElement>('[part="cursor"]'))
     const dragBox = dragBoxRef.current
+    const splitGuide = splitGuideRef.current
     const pxPerSecond = (): number => {
       const total = waveSurfer.getDuration()
       if (total <= 0) return 0
@@ -527,11 +659,13 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       if (pxPerSec <= 0) return 0
       return Math.min(Math.max((clientX - rect.left) / pxPerSec, 0), waveSurfer.getDuration())
     }
-    const isRegionHandleEvent = (event: PointerEvent): boolean =>
+    const isRegionHandleEvent = (event: MouseEvent): boolean =>
       event.composedPath().some((node) => {
         if (!(node instanceof Element)) return false
         return (node.getAttribute('part') ?? '').includes('region-handle')
       })
+    const isPlayheadEvent = (event: MouseEvent): boolean =>
+      event.composedPath().some(node => node instanceof Element && node.getAttribute('part') === 'playhead-handle')
 
     let dragOriginX: number | null = null
     let dragOriginTime = 0
@@ -564,7 +698,8 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     }
 
     const onSelectPointerDown = (event: PointerEvent): void => {
-      if (event.button !== 0 || !event.isPrimary || selectionPointerId !== null || isRegionHandleEvent(event)) return
+      if (timelineToolRef.current === 'split' || event.button !== 0 || !event.isPrimary ||
+        selectionPointerId !== null || isRegionHandleEvent(event) || isPlayheadEvent(event)) return
       selectionPointerId = event.pointerId
       previousRange = { ...regionRangeRef.current }
       dragOriginX = event.clientX
@@ -612,13 +747,14 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
         setActiveExtractedClip(null)
         const range = rangeFrom(event.clientX)
         if (range.end - range.start >= 0.02) {
-          regions.addRegion({
+          const created = regions.addRegion({
             start: range.start,
             end: range.end,
             color: 'rgba(250,255,105,0.10)',
             drag: false,
             resize: true,
           })
+          recordRange({ start: created.start, end: created.end })
         } else if (previousRange) {
           syncRegion(previousRange)
         }
@@ -634,10 +770,45 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       resetSelection()
     }
     const onSelectBlur = (): void => onSelectCancel()
+    const hideSplitGuide = (): void => { if (splitGuide) splitGuide.hidden = true }
+    const splitAtX = (clientX: number) => {
+      if (!regionRef.current) return
+      const time = +timeAtX(clientX).toFixed(6)
+      const part = rangeAtCut(time, clipTimelineRef.current.cuts, waveSurfer.getDuration())
+      if (time - part.start < .02 || part.end - time < .02) return
+      return { time, part }
+    }
+    const onSplitHover = (event: PointerEvent): void => {
+      if (!splitGuide || timelineToolRef.current !== 'split') return
+      if (isPlayheadEvent(event)) { hideSplitGuide(); return }
+      const split = splitAtX(event.clientX)
+      splitGuide.hidden = !split
+      if (split) splitGuide.style.left = `${wrapper.getBoundingClientRect().left + split.time * pxPerSecond() - container.getBoundingClientRect().left}px`
+    }
     const onSelectClickCapture = (event: MouseEvent): void => {
-      if (Date.now() > suppressClickUntil) return
-      event.stopPropagation()
-      event.preventDefault()
+      if (isPlayheadEvent(event)) {
+        event.stopPropagation()
+        event.preventDefault()
+      } else if (timelineToolRef.current === 'split') {
+        event.stopPropagation()
+        event.preventDefault()
+        const split = splitAtX(event.clientX)
+        if (!split) return
+        const { time, part } = split
+        const range = applyRegion({ start: part.start, end: time })
+        if (!range) return
+        const timeline = clipTimelineRef.current
+        const cuts = [...timeline.cuts, time].sort((a, b) => a - b)
+        recordTimeline({ ...timeline, range, cuts })
+        hideSplitGuide()
+        waveSurfer.setTime(time)
+      } else if (Date.now() <= suppressClickUntil) {
+        event.stopPropagation()
+        event.preventDefault()
+      } else if (clipTimelineRef.current.cuts.length && !isRegionHandleEvent(event)) {
+        const range = rangeAtCut(timeAtX(event.clientX), clipTimelineRef.current.cuts, waveSurfer.getDuration())
+        editRegion(range)
+      }
     }
 
     container.addEventListener('pointerdown', onSelectPointerDown, true)
@@ -647,13 +818,16 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     container.addEventListener('lostpointercapture', onSelectCancel)
     window.addEventListener('blur', onSelectBlur)
     container.addEventListener('click', onSelectClickCapture, true)
+    container.addEventListener('pointermove', onSplitHover, true)
+    container.addEventListener('pointerleave', hideSplitGuide)
 
     waveSurfer.on('ready', () => {
+      const saved = projectTimelines.current[media.filePath]
       if (regions.getRegions().length === 0) {
         const end = Math.min(10, Math.max(1, peaks.duration))
         const initial = regions.addRegion({
-          start: 0,
-          end,
+          start: saved?.range.start ?? 0,
+          end: saved?.range.end ?? end,
           color: 'rgba(250,255,105,0.10)',
           drag: false,
           resize: true,
@@ -661,6 +835,8 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
         bindRegionHandles(initial)
         handleRegion(initial)
       }
+      timelineOwner.current = media.filePath
+      resetTimeline(saved ?? { range: regionRangeRef.current, cuts: [], markers: [] })
 
       const width = waveSurfer.getWidth()
       const fitPxPerSec = peaks.duration > 0 ? width / peaks.duration : 0
@@ -677,6 +853,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       _visibleEnd: number,
       scrollLeft: number,
     ): void => {
+      hideSplitGuide()
       setZoomScroll(scrollLeft)
     }
     waveSurfer.on('scroll', handleScroll)
@@ -711,12 +888,16 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       window.removeEventListener('blur', onSelectBlur)
       resetSelection()
       container.removeEventListener('click', onSelectClickCapture, true)
+      container.removeEventListener('pointermove', onSplitHover, true)
+      container.removeEventListener('pointerleave', hideSplitGuide)
+      hideSplitGuide()
       resizeObserver.disconnect()
       waveSurfer.destroy()
+      setWaveCursor(null)
       waveSurferRef.current = null
       regionRef.current = null
     }
-  }, [media, peaks, syncRegion])
+  }, [media, peaks, syncRegion, applyRegion, editRegion, recordRange, recordTimeline, resetTimeline])
 
   useEffect(() => {
     if (!previewing) return
@@ -794,9 +975,10 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   useEffect(() => {
     if (!window.vdro?.onOpenMedia) return
     return window.vdro.onOpenMedia((next) => {
+      onNavigate('clip')
       void adoptMedia(next)
     })
-  }, [adoptMedia])
+  }, [adoptMedia, onNavigate])
 
   const applyZoom = useCallback(
     (nextFactor: number): void => {
@@ -942,6 +1124,40 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     setCurrentTime(video.currentTime)
   }, [duration, stopExtractedPlayback])
 
+  function startPlayheadDrag(): PlayheadDrag | undefined {
+    const wave = waveSurferRef.current
+    const video = videoRef.current
+    if (!wave || !video) return
+    const fullDuration = wave.getDuration()
+    const width = wave.getWrapper().getBoundingClientRect().width
+    if (!fullDuration || !width) return
+    const secondsPerPixel = fullDuration / width
+    const first = wave.getScroll() * secondsPerPixel
+    const last = Math.min(fullDuration, first + wave.getWidth() * secondsPerPixel)
+    const origin = video.currentTime
+    const resume = !video.paused && !extractedPlaybackRef.current
+    stopExtractedPlayback()
+    video.pause()
+    setPreviewing(false)
+    setActiveExtractedClip(null)
+    return {
+      move: deltaX => {
+        if (waveSurferRef.current !== wave) return
+        const next = clamp(origin + deltaX * secondsPerPixel, first, last)
+        wave.setTime(next)
+        setCurrentTime(next)
+      },
+      finish: canResume => {
+        if (!canResume || !resume || waveSurferRef.current !== wave || !wave.getWrapper().getClientRects().length) return
+        const time = video.currentTime
+        const range = regionRangeRef.current
+        if (time >= fullDuration || (previewing && (time < range.start || time >= range.end))) return
+        setPreviewing(previewing)
+        void video.play().catch(cause => setError(errorMessage(cause)))
+      },
+    }
+  }
+
   const seekBy = useCallback(
     (seconds: number): void => {
       const video = videoRef.current
@@ -956,20 +1172,43 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     const current = regionRef.current
     if (!video || !current) return
     const start = clamp(video.currentTime, 0, Math.max(0, current.end - 0.02))
-    setActiveExtractedClip(null)
-    current.setOptions({ start })
-    syncRegion({ start, end: current.end })
-  }, [syncRegion])
+    editRegion({ start, end: current.end })
+  }, [editRegion])
 
   const setOutPoint = useCallback((): void => {
     const video = videoRef.current
     const current = regionRef.current
     if (!video || !current) return
     const end = clamp(video.currentTime, current.start + 0.02, duration || video.duration)
-    setActiveExtractedClip(null)
-    current.setOptions({ end })
-    syncRegion({ start: current.start, end })
-  }, [duration, syncRegion])
+    editRegion({ start: current.start, end })
+  }, [duration, editRegion])
+
+  useTimelineHistoryShortcuts(active && !loading && !extracting && !settingsOpen, () => restoreRegion(undoRange), () => restoreRegion(redoRange))
+
+  function restoreRegion(restore: () => ClipTimeline | undefined) {
+    if (!regionRef.current || loading || extracting) return
+    const snapshot = restore()
+    if (!snapshot) return
+    stopExtractedPlayback()
+    applyRegion(snapshot.range)
+    if (splitGuideRef.current) splitGuideRef.current.hidden = true
+  }
+
+  function clearSelectedRange() {
+    stopExtractedPlayback()
+    if (previewing) videoRef.current?.pause()
+    setPreviewing(false)
+    editRegion({ start: 0, end: 0 })
+  }
+
+  function addTimelineMarker() {
+    if (!peaks || loading || extracting || !regionRef.current) return
+    const position = extractedPlaybackRef.current ? currentTime : (videoRef.current?.currentTime ?? currentTime)
+    const time = clamp(+position.toFixed(3), 0, peaks.duration)
+    if (clipTimeline.markers.some(marker => Math.abs(time - marker) < .001)) return
+    const markers = [...clipTimeline.markers, time].sort((left, right) => left - right)
+    recordTimeline({ ...clipTimeline, markers })
+  }
 
   const handlePreviewStageClick = useCallback((): void => {
     if (activeExtractedClip || extractedPlaybackRef.current) {
@@ -1085,9 +1324,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     const fullEnd = peaks.duration || duration || media.info.duration
     if (fullEnd < 0.02) return
 
-    setActiveExtractedClip(null)
-    regionRef.current?.setOptions({ start: 0, end: fullEnd })
-    syncRegion({ start: 0, end: fullEnd })
+    editRegion({ start: 0, end: fullEnd })
     void extractRange(0, fullEnd)
   }, [
     media,
@@ -1096,7 +1333,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     extracting,
     duration,
     extractRange,
-    syncRegion,
+    editRegion,
   ])
 
   const resolveExtractedSource = useCallback(
@@ -1322,20 +1559,18 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       const next = sanitizeSettings({ ...current, ...patch })
       return next
     })
-  }, [])
+  }, [setSettings])
 
   const resetAllSettings = useCallback((): void => {
     setSettings(DEFAULT_APP_SETTINGS)
     setLayout(DEFAULT_LAYOUT)
-    setAudioEditorHeight(null)
     setLoop(DEFAULT_APP_SETTINGS.previewLoop)
     setLibraryCollapsed(DEFAULT_APP_SETTINGS.sidebarCollapsed)
     setNotice('已恢复全部默认设置')
-  }, [])
+  }, [setSettings, setLayout])
 
   const resetLayoutSettings = useCallback((): void => {
     setLayout(DEFAULT_LAYOUT)
-    setAudioEditorHeight(null)
     setNotice('已重置界面布局')
   }, [])
 
@@ -1351,12 +1586,17 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     ) {
       return
     }
+    if (extracting || savingClipId || !window.dispatchEvent(new Event('vdro:before-clear-temp', { cancelable: true }))) {
+      setNotice('请在当前音频任务完成后清理临时文件。')
+      return
+    }
     stopExtractedPlayback()
     await window.vdro.clearTempFiles()
+    window.dispatchEvent(new Event('vdro:temp-cleared'))
     setExtractedClips([])
     setActiveExtractedClip(null)
     setNotice('已清理所有临时提取文件')
-  }, [stopExtractedPlayback, settings.confirmDelete, settings.language])
+  }, [stopExtractedPlayback, settings.confirmDelete, settings.language, extracting, savingClipId])
 
   const clearWaveformCache = useCallback(async (): Promise<void> => {
     if (
@@ -1407,6 +1647,8 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       peaksCacheRef.current.delete(item.id)
 
       if (media?.id !== item.id) return
+      mediaRequest.current++
+      setLoading(false)
 
       stopExtractedPlayback()
       setActiveExtractedClip(null)
@@ -1625,10 +1867,10 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
 
     void (async () => {
       try {
-        const next = await window.vdro.getSettings()
+        const next = settingsLoaded ? settings : await window.vdro.getSettings()
         if (cancelled) return
 
-        setSettings(next)
+        onSettingsRead(next)
         setFormat(next.outputFormat)
         if (next.outputQuality === 'native') {
           setUseNativeQuality(true)
@@ -1641,17 +1883,32 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
         setLoop(next.previewLoop)
         setLibraryCollapsed(next.sidebarCollapsed)
 
+        const draft = projectId ? readDraft<ClipProject>(projectId, 'clip') : null
+        if (draft) { projectTimelines.current = draft.timelines; projectCurrent.current = draft.current }
+        const legacyDraft = projectId === '__draft__' && !draft
+        async function restoreLibrary() {
+          const media: ImportedMedia[] = []
+          const missing: string[] = []
+          for (const path of draft?.paths ?? []) {
+            if (cancelled) break
+            try { media.push(await window.vdro.importPath(path)) } catch { missing.push(path) }
+          }
+          return { media, missing }
+        }
         const [info, loadedLibrary, loadedClips] = await Promise.all([
           window.vdro.getAppInfo().catch(() => null),
-          next.persistLibrary
+          projectId && !legacyDraft ? restoreLibrary() : next.persistLibrary
             ? window.vdro.loadLibrary().catch(() => ({ media: [], missing: [] }))
             : Promise.resolve({ media: [], missing: [] }),
-          next.persistExtracted && next.persistLibrary
-            ? window.vdro.loadExtracted().catch(() => [])
+          projectId || (next.persistExtracted && next.persistLibrary)
+            ? window.vdro.loadExtracted(legacyDraft ? undefined : projectId).catch(() => [])
             : Promise.resolve([]),
         ])
 
-        if (cancelled) return
+        if (cancelled) {
+          for (const item of loadedLibrary.media) void window.vdro.releaseMedia(item.id).catch(() => undefined)
+          return
+        }
         if (info) setAppInfo(info)
         if (loadedLibrary.media.length > 0) {
           setLibrary((previous) => {
@@ -1659,6 +1916,15 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
             return [...previous, ...loadedLibrary.media.filter((item) => !known.has(item.filePath))]
           })
         }
+        const availablePaths = new Set(loadedLibrary.media.map(item => item.filePath))
+        setUnavailablePaths((draft?.paths ?? []).filter(path => !availablePaths.has(path)))
+        const current = loadedLibrary.media.find(item => item.filePath === draft?.current)
+        if (current && !await adoptMedia(current)) {
+          setLibrary(previous => previous.filter(item => item.id !== current.id))
+          setUnavailablePaths(previous => [...new Set([...previous, current.filePath])])
+        }
+        if (cancelled) return
+        setWorkspaceReady(true)
         if (loadedLibrary.missing.length > 0) {
           setNotice(
             `${loadedLibrary.missing.length} 个素材文件已失效，已从素材库跳过`,
@@ -1682,25 +1948,20 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [onSettingsRead, setSettingsLoaded, projectId])
 
   useEffect(() => {
-    if (!settingsLoaded) return
+    if (!workspaceReady || !settingsLoaded) return
     const timer = window.setTimeout(() => {
       void window.vdro.saveSettings(settings).catch((cause) => setError(`保存设置失败：${errorMessage(cause)}`))
     }, 150)
     return () => window.clearTimeout(timer)
-  }, [settings, settingsLoaded])
+  }, [settings, settingsLoaded, workspaceReady])
 
   useEffect(() => {
     if (!settingsLoaded) return
     void window.vdro.setWindowTranslucent(isTranslucent).catch(() => undefined)
   }, [settingsLoaded, isTranslucent, settings.theme, settings.translucent])
-
-  useEffect(() => {
-    if (!settingsLoaded) return
-    void window.vdro.setZoomFactor(settings.uiScale / 100).catch(() => undefined)
-  }, [settingsLoaded, settings.uiScale])
 
   useEffect(() => {
     if (!settingsLoaded) return
@@ -1768,20 +2029,24 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   }, [media?.id, library])
 
   useEffect(() => {
-    if (!settingsLoaded) return
+    if (!workspaceReady || projectId) return
     const entries = settings.persistLibrary
       ? library.map((item) => ({ filePath: item.filePath, fileName: item.fileName }))
       : []
     void window.vdro.saveLibrary(entries).catch((cause) => setError(`保存素材库失败：${errorMessage(cause)}`))
-  }, [library, settings.persistLibrary, settingsLoaded])
+  }, [library, settings.persistLibrary, workspaceReady, projectId])
 
   useEffect(() => {
-    if (!settingsLoaded) return
+    if (!workspaceReady) return
     const clips =
-      settings.persistExtracted && settings.persistLibrary ? extractedClips : []
-    void window.vdro.saveExtractedClips(clips).catch((cause) => setError(`保存提取记录失败：${errorMessage(cause)}`))
+      projectId || (settings.persistExtracted && settings.persistLibrary) ? extractedClips : []
+    void window.vdro.saveExtractedClips(clips, projectId).catch((cause) => {
+      if (projectId) reportProjectState(projectId, 'clip', 'error')
+      setError(`保存提取记录失败：${errorMessage(cause)}`)
+    })
   }, [
     extractedClips,
+    projectId, workspaceReady,
     settings.persistExtracted,
     settings.persistLibrary,
     settingsLoaded,
@@ -1932,13 +2197,19 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
   useEffect(() => { if (!active) { videoRef.current?.pause(); stopExtractedPlayback(); setPreviewing(false) } }, [active, stopExtractedPlayback])
   return (
     <div
+      inert={!!projectId && !workspaceReady}
       ref={appRootRef}
       className={`app clip-app theme-${settings.theme} material-${settings.materialColor} accent-${settings.accent} ui-scale-${settings.uiScale}`}
-      style={
-        {
-          ...PANEL_CSS,
-        } as CSSProperties
-      }
+      style={{
+        '--clip-inspector-width': layout.inspectorWidth + 'px',
+        '--clip-timeline-height': layout.timelineHeight + 'px',
+        '--clip-time-height': layout.clipTimeHeight === null ? 'auto' : layout.clipTimeHeight + 'px',
+        '--clip-preview-min': MIN_VIDEO_PREVIEW_HEIGHT + 'px',
+        '--clip-timeline-min': MIN_TIMELINE_HEIGHT + 'px',
+        '--clip-time-min': MIN_CLIP_TIME_HEIGHT + 'px',
+        '--clip-results-min': MIN_RESULTS_HEIGHT + 'px',
+        '--clip-split-size': PANEL_RESIZER_HEIGHT + 'px',
+      } as CSSProperties}
       onDragEnter={(event) => {
         event.preventDefault()
         setDragging(true)
@@ -1949,62 +2220,13 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
       }}
       onDrop={(event) => void handleDrop(event)}
     >
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark" />
-          <span className="brand-name">VDRO</span>
-        </div>
-
-        <PageTabs page="clip" onNavigate={onNavigate} />
-        <div className="topbar-file">
-          {media && (
-            <>
-              <span className="file-name" title={media.fileName}>
-                {media.fileName}
-              </span>
-              <span className="format-badge">{summary(media)}</span>
-              <span className="file-duration">{formatTime(duration, false)}</span>
-            </>
-          )}
-        </div>
-
-
-      </header>
-
-
-      <div className={`app-body${libraryCollapsed ? ' library-collapsed' : ''}`}>
+      <div ref={bodyRef} className={`app-body${libraryCollapsed ? ' library-collapsed' : ''}`}>
         <div className={`clip-tools${libraryCollapsed ? ' is-collapsed' : ''}`}>
 
-<aside className={`library-panel${libraryCollapsed ? ' is-collapsed' : ''}`}>
-          <div className="library-head">
-            {!libraryCollapsed && (
-              <div className="library-title">
-                <strong>素材列表 <span className="clip-count">{library.length}</span></strong>
-                <span className="library-size">{formatLibrarySize(libraryBytes)}</span>
-              </div>
-            )}
-            <button
-              className="library-toggle"
-              type="button"
-              title={libraryCollapsed ? '展开素材栏' : '收缩素材栏'}
-              aria-label={libraryCollapsed ? '展开素材栏' : '收缩素材栏'}
-              onClick={() => setLibraryCollapsed((value) => !value)}
-            >
-              <IconChevron collapsed={libraryCollapsed} />
-            </button>
-          </div>
-
-          {!libraryCollapsed && (
-            <button className="library-add" type="button" onClick={() => void handleOpen()}>
-              <IconPlus />
-              添加素材
-            </button>
-          )}
-
-          <div
-            ref={libraryListRef}
-            className={`library-list${libraryDrag ? ' is-dragging' : ''}`}
-          >
+          <MediaLibrary items={library} collapsed={libraryCollapsed} listRef={libraryListRef} dragging={!!libraryDrag}
+            onToggle={() => setLibraryCollapsed(value => !value)} onImport={() => void handleOpen()}>
+            {!libraryCollapsed && <MissingMediaList paths={unavailablePaths} disabled={loading || extracting}
+              onRelink={(path, choose) => void relinkClipAsset(path, choose)}/>}
             {(() => {
               const visibleLibrary = libraryDrag
                 ? library.filter((item) => item.id !== libraryDrag.itemId)
@@ -2021,135 +2243,35 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                   {visibleLibrary.map((item, index) => (
                     <Fragment key={item.id}>
                       {placeholderIndex === index && placeholder}
-                      <div
-                        data-library-id={item.id}
-                        className={`library-item${media?.id === item.id ? ' is-active' : ''}`}
-                        title={item.fileName}
-                        onPointerDown={(event) => beginLibraryPress(event, item)}
-                      >
-                        <button
-                          className="library-main"
-                          type="button"
-                          onClick={() => {
-                            if (suppressLibraryClickRef.current) {
-                              suppressLibraryClickRef.current = false
-                              return
-                            }
-                            void adoptMedia(item)
-                          }}
-                        >
-                          <span className="library-thumb">
-                            {item.info.videoStreams.length > 0 ? (
-                              <IconFileVideo />
-                            ) : (
-                              <IconFileAudio />
-                            )}
-                          </span>
-                          {!libraryCollapsed && (
-                            <span className="library-meta">
-                              <strong>{item.fileName}</strong>
-                              <span>
-                                {formatTime(item.info.duration, false)} · {summary(item)}
-                              </span>
-                            </span>
-                          )}
-                        </button>
-                        {!libraryCollapsed && (
-                          <button
-                            className="library-remove"
-                            type="button"
-                            title="从素材栏移除"
-                            aria-label={`从素材栏移除 ${item.fileName}`}
-                            onClick={() => removeLibraryItem(item)}
-                          >
-                            <IconTrash />
-                          </button>
-                        )}
-                      </div>
+                      <MediaLibraryItem item={item} selected={media?.id === item.id} collapsed={libraryCollapsed}
+                        onPointerDown={event => beginLibraryPress(event, item)}
+                        onSelect={() => {
+                          if (suppressLibraryClickRef.current) {
+                            suppressLibraryClickRef.current = false
+                            return
+                          }
+                          void adoptMedia(item)
+                        }}
+                        onRemove={() => removeLibraryItem(item)}/>
                     </Fragment>
                   ))}
                   {placeholderIndex === visibleLibrary.length && placeholder}
                 </>
               )
             })()}
-
-            {!libraryCollapsed && library.length === 0 && (
-              <div className="library-empty">
-                <IconLibrary />
-                <span>素材会出现在这里</span>
-                <small>拖入音频或视频，或点击上方导入</small>
-              </div>
-            )}
-
-            {libraryCollapsed && (
-              <button
-                className="library-rail-add"
-                type="button"
-                title="导入素材"
-                aria-label="导入素材"
-                onClick={() => void handleOpen()}
-              >
-                <IconPlus />
-              </button>
-            )}
-          </div>
-
-          {libraryCollapsed && <span className="library-rail-label">素材</span>}
-        </aside>
+          </MediaLibrary>
         </div>
 
-        <div className={`main-column${soloPanel === 'extracted' ? ' has-solo-extracted' : ''}`} ref={mainColumnRef}>
-          <div
-            ref={editorTopRef}
-            className={`editor-top${layout.previewCollapsed ? ' preview-collapsed' : ''}${
-              layout.timelineCollapsed ? ' timeline-collapsed' : ''
-            }${layout.previewCollapsed && layout.timelineCollapsed ? ' all-top-collapsed' : ''}${
-              isSoloSized ? ' solo-resized' : ''
-            }${isPreviewSolo ? ' preview-solo' : ''}${audioToggling ? ' audio-toggling' : ''}`}
-            style={
-              isPreviewSolo
-                ? {
-                    flexGrow: 1,
-                    flexBasis: 0,
-                    height: undefined,
-                    minHeight: MIN_VIDEO_AREA_HEIGHT + AUDIO_COLLAPSED_HEIGHT,
-                  }
-                : {
-                    flexGrow:
-                      audioEditorHeight === null
-                        ? 1 - layout.extractedRatio
-                        : 0,
-                    flexBasis:
-                      audioEditorHeight === null
-                        ? undefined
-                        : `${audioEditorHeight}px`,
-                    height:
-                      audioEditorHeight === null
-                        ? undefined
-                        : `${audioEditorHeight}px`,
-                    minHeight:
-                      `${Math.max(audioEditorHeight ?? 0, minimumEditorHeight)}px`,
-                  }
-            }
-          >
-            <main
-              ref={workspaceRef}
-              className={`workspace${layout.previewCollapsed ? ' is-collapsed' : ''}`}
-            >
-            <section
-              className={`preview-panel${layout.previewCollapsed ? ' is-collapsed' : ''}`}
-              style={
-                layout.previewCollapsed
-                  ? { flex: '0 0 44px', minHeight: 44, alignSelf: 'stretch' }
-                  : undefined
-              }
-            >
+        <main ref={mainColumnRef} className="main-column"
+          data-preview-collapsed={layout.previewCollapsed} data-timeline-collapsed={layout.timelineCollapsed}>
+            <section className={`preview-panel${layout.previewCollapsed ? ' is-collapsed' : ''}`}>
               <div className="preview-collapse-bar">
                 <button
                   className="panel-collapse-btn"
                   type="button"
                   title={layout.previewCollapsed ? '展开视频预览' : '收起视频预览'}
                   aria-label={layout.previewCollapsed ? '展开视频预览' : '收起视频预览'}
+                  aria-expanded={!layout.previewCollapsed}
                   onClick={() => togglePanel('previewCollapsed')}
                 >
                   <IconChevronVertical collapsed={layout.previewCollapsed} />
@@ -2350,9 +2472,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
               )}
             </section>
 
-            </main>
-
-            {soloPanel === null && !layout.previewCollapsed && (
+            {!layout.previewCollapsed && !layout.timelineCollapsed && (
               <div
                 className="resizer resizer-horizontal video-resizer"
                 role="separator"
@@ -2365,60 +2485,61 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
           <section
             ref={timelinePanelRef}
             className={`timeline-panel${layout.timelineCollapsed ? ' is-collapsed' : ''}`}
-            style={{
-              flexBasis: `${effectiveTimelineHeight}px`,
-              minHeight: `${effectiveTimelineHeight}px`,
-              height: layout.timelineCollapsed ? '48px' : undefined,
-              maxHeight: layout.timelineCollapsed ? '48px' : undefined,
-              flexGrow: layout.timelineCollapsed ? 0 : undefined,
-            }}
           >
-            <div
-              className="timeline-layout"
-              style={{
-                gridTemplateColumns: `minmax(0, 1fr) 12px minmax(180px, min(${layout.inspectorWidth}px, 36%))`,
-              }}
-            >
               <div className="timeline-editor">
             <div className="timeline-head">
-              <div>
+              <div className="timeline-tool-row">
                 <button
                   className="panel-collapse-btn"
                   type="button"
-                  title={layout.timelineCollapsed ? '展开音频预览' : '收起音频预览'}
-                  aria-label={layout.timelineCollapsed ? '展开音频预览' : '收起音频预览'}
+                  title={layout.timelineCollapsed ? '展开音频时间线' : '收起音频时间线'}
+                  aria-label={layout.timelineCollapsed ? '展开音频时间线' : '收起音频时间线'}
+                  aria-expanded={!layout.timelineCollapsed}
                   onClick={() => togglePanel('timelineCollapsed')}
                 >
                   <IconChevronVertical collapsed={layout.timelineCollapsed} />
                 </button>
-                <span className="panel-title-text">音频预览</span>
-                <span className="timeline-note">
-                  {media ? '按住左键拖动框选 · 拖两端微调' : '等待媒体'}
-                </span>
+                {!layout.timelineCollapsed && <>
+                  <TimelineToolPicker tool={timelineTool} shortcuts={settings.shortcuts} onChange={changeTimelineTool} />
+                  <TimelineEditControls
+                    canUndo={canEditTimeline && pastRanges.length > 0}
+                    canRedo={canEditTimeline && futureRanges.length > 0}
+                    canDelete={canEditTimeline && clipDuration >= .02}
+                    canAddMarker={canEditTimeline}
+                    deleteLabel="删除当前选区"
+                    onUndo={() => restoreRegion(undoRange)}
+                    onRedo={() => restoreRegion(redoRange)}
+                    onDelete={clearSelectedRange}
+                    onAddMarker={addTimelineMarker}
+                  />
+                  <span className="timeline-note">
+                    {media ? (timelineTool === 'split' ? '点击波形分割音频' : '按住左键拖动框选 · 拖两端微调') : '等待媒体'}
+                  </span>
+                </>}
               </div>
-              {!layout.timelineCollapsed && <div className="timeline-actions">
-                <button
-                  className="btn btn-ghost btn-small timeline-full-extract"
-                  type="button"
-                  disabled={!canExtractFull}
-                  onClick={handleExtractFull}
-                >
-                  整段提取
-                </button>
-                <button
-                  className="btn btn-primary btn-small timeline-extract"
-                  type="button"
-                  disabled={!canExtract}
-                  onClick={handleExtract}
-                >
-                  <IconExport />
-                  {extracting ? '提取中…' : '提取'}
-                </button>
-              </div>}
-
+              {!layout.timelineCollapsed && <WaveformZoomControls
+                className="timeline-zoom"
+                factor={zoomFactor}
+                canZoomIn={!!peaks && zoomFactor < 32}
+                canZoomOut={!!peaks && zoomFactor > 1.01}
+                onZoomIn={() => applyZoom(zoomFactor * 1.5)}
+                onZoomOut={() => {
+                  const next = zoomFactor / 1.5
+                  if (next <= 1.01) resetZoom()
+                  else applyZoom(next)
+                }}
+                onReset={resetZoom}
+              />}
             </div>
 
-            <div className={`waveform-wrap${extractedOverlay ? ' has-extracted' : ''}`}>
+            {!layout.timelineCollapsed && <div className="timeline-ruler" aria-hidden="true">
+              {Array.from({ length: visibleDuration > 0 ? 5 : 1 }, (_, index) => (
+                <span key={index}>{formatTime(visibleStartTime + visibleDuration * index / 4, visibleDuration > 0 && visibleDuration < 15)}</span>
+              ))}
+            </div>}
+
+            <div className={`waveform-wrap${extractedOverlay ? ' has-extracted' : ''}`}
+              data-timeline-tool={timelineTool} data-range-selected={clipDuration >= .02}>
               {media ? (
                 <div ref={waveRef} className="waveform" />
               ) : (
@@ -2428,6 +2549,22 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                 </div>
               )}
               <div ref={dragBoxRef} className="drag-box" hidden />
+              <span ref={splitGuideRef} className="timeline-split-guide" aria-hidden="true" hidden />
+              {waveCursor && peaks && !layout.timelineCollapsed && createPortal(<TimelinePlayheadHandle
+                label={translateUiText('拖动播放头', settings.language)} time={currentTime} duration={duration}
+                seek={seekTo} startDrag={startPlayheadDrag} />, waveCursor)}
+              {peaks && visibleDuration > 0 && clipTimeline.cuts.filter(time => time >= visibleStartTime && time <= visibleEndTime)
+                .map(time => <span key={time} className="timeline-cut-line" aria-hidden="true"
+                  style={{ left: `${(time - visibleStartTime) / visibleDuration * 100}%` }} />)}
+              {peaks && !layout.timelineCollapsed && visibleDuration > 0 && clipTimeline.markers.map((time, index) =>
+                time >= visibleStartTime && time <= visibleEndTime && <button key={time} type="button" className="clip-marker-pin"
+                  disabled={timelineTool === 'split'} aria-label={`定位标记 ${index + 1}`}
+                  title={`标记 ${index + 1}：${formatTime(time)}`}
+                  style={{ '--clip-marker-position': `${(time - visibleStartTime) / visibleDuration * 100}%` } as CSSProperties}
+                  onClick={() => {
+                    setActiveExtractedClip(null)
+                    seekTo(time)
+                  }}>{index + 1}</button>)}
               {media && !peaks && !loading && (
                 <div className="waveform-status">波形尚未生成</div>
               )}
@@ -2526,7 +2663,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                     updateSettings({ previewMuted: !settings.previewMuted })
                   }
                 >
-                  {settings.previewMuted ? <IconVolumeMuted /> : <IconVolume />}
+                  <VolumeIcon muted={settings.previewMuted} />
                 </button>
                 <input
                   className="preview-volume-range"
@@ -2544,53 +2681,26 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                   }
                 />
               </div>
-            <div className="timeline-zoom" role="group" aria-label="波形缩放">
-              <button
-                className="zoom-btn"
-                type="button"
-                disabled={!peaks || zoomFactor <= 1.01}
-                onClick={() => {
-                  const next = zoomFactor / 1.5
-                  if (next <= 1.01) resetZoom()
-                  else applyZoom(next)
-                }}
-              >
-                缩小
-              </button>
-              <button
-                className="zoom-btn"
-                type="button"
-                disabled={!peaks || zoomFactor >= 32}
-                onClick={() => applyZoom(zoomFactor * 1.5)}
-              >
-                放大
-              </button>
-              <button
-                className="zoom-btn"
-                type="button"
-                disabled={!peaks || zoomFactor <= 1.01}
-                onClick={resetZoom}
-              >
-                重置
-              </button>
-              <output className="waveform-zoom-factor" aria-label="当前波形缩放倍率">{zoomFactor.toFixed(1)}×</output>
-            </div>
+              {!layout.timelineCollapsed && <div className="timeline-actions">
+                <button className="btn btn-ghost btn-small timeline-full-extract" type="button"
+                  disabled={!canExtractFull} onClick={handleExtractFull}>整段提取</button>
+                <button className="btn btn-primary btn-small timeline-extract" type="button"
+                  disabled={!canExtract} onClick={handleExtract}>
+                  <IconExport />
+                  {extracting ? '提取中…' : '提取'}
+                </button>
+              </div>}
             </div>
               </div>
 
-              <div
-                className={`resizer resizer-vertical timeline-inspector-resizer${layout.timelineCollapsed ? ' is-disabled' : ''}`}
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="调整音频预览与片段时间宽度"
-                onPointerDown={layout.timelineCollapsed ? undefined : beginInspectorResize}
-              />
+          </section>
+        </main>
 
-              <aside className="inspector inspector-embedded">
-                <div className="panel-heading">
-                  <span className="eyebrow">片段时间</span>
-                  <span className="panel-index">01</span>
-                </div>
+        <aside ref={dockRef} className={`clip-inspector${layout.extractedCollapsed ? ' results-collapsed' : ''}`}>
+          <div className="resizer resizer-vertical clip-dock-resizer" role="separator" aria-orientation="vertical"
+            aria-label="调整右侧栏宽度" onPointerDown={beginInspectorResize} />
+          <section ref={clipTimeRef} className="inspector clip-time">
+            <h2 className="panel-heading panel-title-text">片段时间</h2>
 
                 {!media ? (
                   <div className="inspector-empty">
@@ -2631,15 +2741,10 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                     </div>
                   </>
                 )}
-              </aside>
-            </div>
           </section>
-
-          </div>
-
-          {soloPanel === null && !layout.extractedCollapsed && (
+          {!layout.extractedCollapsed && (
             <div
-              className="resizer resizer-horizontal"
+              className="resizer resizer-horizontal clip-results-resizer"
               role="separator"
               aria-orientation="horizontal"
               aria-label="调整已提取音频高度"
@@ -2647,26 +2752,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
             />
           )}
 
-          <section
-            ref={extractedPanelRef}
-            className={`extracted-panel${layout.extractedCollapsed ? ' is-collapsed' : ''}${soloPanel === 'extracted' ? ' is-solo' : ''}`}
-            style={
-              layout.extractedCollapsed
-                ? { flexGrow: 0, flexBasis: '48px', minHeight: '48px' }
-                : soloPanel === 'extracted' && layout.soloHeight !== null
-                  ? {
-                      flexGrow: 0,
-                      flexBasis: `${layout.soloHeight}px`,
-                      minHeight: `${layout.soloHeight}px`,
-                    }
-                  : {
-                      flexGrow:
-                        audioEditorHeight !== null || soloPanel === 'extracted'
-                          ? 1
-                          : layout.extractedRatio,
-                    }
-            }
-          >
+          <section className={`extracted-panel${layout.extractedCollapsed ? ' is-collapsed' : ''}`}>
             <div className="extracted-head">
               <div className="extracted-title">
                 <button
@@ -2674,6 +2760,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                   type="button"
                   title={layout.extractedCollapsed ? '展开已提取音频' : '收起已提取音频'}
                   aria-label={layout.extractedCollapsed ? '展开已提取音频' : '收起已提取音频'}
+                  aria-expanded={!layout.extractedCollapsed}
                   onClick={() => togglePanel('extractedCollapsed')}
                 >
                   <IconChevronVertical collapsed={layout.extractedCollapsed} />
@@ -2793,7 +2880,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                         <IconFileAudio />
                       </span>
                       <span className="extracted-meta">
-                        <strong title={`源素材：${clip.sourceName}`}>{clip.fileName}</strong>
+                        <strong title={`源素材：${clip.sourceName}`}><span translate="no">{clip.fileName}</span></strong>
                         <span>
                           {formatTime(clip.start)} – {formatTime(clip.end)} ·{' '}
                           {clip.format.toUpperCase()} · {formatLibrarySize(clip.size)}
@@ -2816,7 +2903,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
                       >
                         {savingClipId === clip.id ? '保存中' : '保存'}
                       </button>
-<button className="btn btn-ghost btn-small" type="button" onClick={() => onAdjustClip(clip)}>音频调整</button>
+                      <button className="extracted-action btn btn-ghost btn-small" type="button" onClick={() => onAdjustClip(clip)}>音频调整</button>
                       <button
                         className="extracted-action is-danger btn btn-ghost btn-small"
                         type="button"
@@ -2831,15 +2918,7 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
             </div>
           </section>
 
-          {soloPanel === 'extracted' && (
-            <div
-              className="resizer resizer-horizontal solo-resizer"
-              role="separator"
-              aria-orientation="horizontal"
-              aria-label="调整已提取音频高度"
-              onPointerDown={beginSoloResize}
-            />
-          )}
+        </aside>
 
       {job && (
         <div className={`jobbar job-${job.status}`}>
@@ -2880,7 +2959,6 @@ export default function ClipEditor({ active, onNavigate, onAdjustClip, settingsR
           )}
         </div>
       )}
-        </div>
       </div>
 
       <audio
@@ -2979,24 +3057,6 @@ export function IconSettings(): JSX.Element {
   )
 }
 
-function IconChevron({ collapsed }: { collapsed: boolean }): JSX.Element {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-      className={collapsed ? 'is-collapsed' : undefined}
-    >
-      <path
-        d="M14 6l-6 6 6 6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="square"
-      />
-    </svg>
-  )
-}
-
 function IconChevronVertical({ collapsed }: { collapsed: boolean }): JSX.Element {
   return (
     <svg
@@ -3024,70 +3084,6 @@ function IconChevronDown(): JSX.Element {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="square"
-      />
-    </svg>
-  )
-}
-
-function IconPlus(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z" fill="currentColor" />
-    </svg>
-  )
-}
-
-function IconTrash(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M5 7h14M10 4h4l1 3H9zm-2 3l1 13h6l1-13M10 11v6m4-6v6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="square"
-      />
-    </svg>
-  )
-}
-
-function IconLibrary(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M4 7h5l2 2h9v10H4zm0-3h6l2 2h8v2H4z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinejoin="miter"
-      />
-    </svg>
-  )
-}
-
-function IconFileAudio(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M6 3h8l4 4v14H6zM14 3v5h4M9 13v5m3-7v7m3-4v3"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="square"
-      />
-    </svg>
-  )
-}
-
-function IconFileVideo(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M4 6h16v12H4zM10 9l5 3-5 3z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinejoin="miter"
       />
     </svg>
   )
@@ -3164,48 +3160,6 @@ function IconLoop(): JSX.Element {
         stroke="currentColor"
         strokeWidth="1.8"
         strokeLinecap="square"
-      />
-    </svg>
-  )
-}
-
-function IconVolume(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M4 9h4l5-4v14l-5-4H4V9Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  )
-}
-
-function IconVolumeMuted(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        d="M4 9h4l5-4v14l-5-4H4V9Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path
-        d="m16 9 5 6m0-6-5 6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
       />
     </svg>
   )

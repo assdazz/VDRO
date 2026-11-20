@@ -1,16 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { RubberBandNode } from './RubberBandNode'
 import type { AudioAdjustment } from '@shared/types'
+import { fadeLevel } from '@shared/fades'
 import { pitchAt, sortedPitchPoints } from '@shared/pitch'
 
-type Preview = { enabled: boolean; active: boolean; effects: AudioAdjustment; start: number; end: number }
+type Preview = { active: boolean; effects: AudioAdjustment; start: number; end: number }
 const clamp = (value: number, low: number, high: number) => Number.isFinite(value) ? Math.max(low, Math.min(high, value)) : low
-function envelope(time: number, state: Preview) {
+export function previewGain(time: number, state: Pick<Preview, 'effects' | 'start' | 'end'>) {
   const { effects, start, end } = state
-  const curve = (x: number) => effects.curve === 'qsin' ? Math.sin(x * Math.PI / 2) : effects.curve === 'exp' ? (x === 0 ? 0 : Math.exp(11.512925 * (x - 1))) : x
-  const fadeIn = effects.fadeIn > 0 ? curve(clamp((time - start) / effects.fadeIn, 0, 1)) : 1
-  const fadeOut = effects.fadeOut > 0 ? curve(clamp((end - time) / effects.fadeOut, 0, 1)) : 1
-  return 10 ** (clamp(effects.gainDb, -24, 12) / 20) * fadeIn * fadeOut
+  return 10 ** (clamp(effects.gainDb, -24, 12) / 20) * fadeLevel(time, effects, start, end)
 }
 
 /** One streaming graph per audio element; editing never re-decodes the whole file. */
@@ -30,12 +28,11 @@ export function useRealtimePreview(audio: RefObject<HTMLAudioElement | null>, st
       if (disposed) { processor.dispose(); return }
       player.preservesPitch = false
       const source = context.createMediaElementSource(player)
-      const wet = context.createGain(), dry = context.createGain(), gain = context.createGain()
+      const wet = context.createGain(), gain = context.createGain()
       const limiter = context.createDynamicsCompressor()
       limiter.threshold.value = -1; limiter.knee.value = 3
       limiter.attack.value = .003; limiter.release.value = .1
       source.connect(processor); processor.connect(gain); gain.connect(limiter); limiter.connect(wet); wet.connect(context.destination)
-      source.connect(dry); dry.connect(context.destination)
       let limiting: boolean | undefined
       let muteUntil = 0
       let lastPitchKey = ''
@@ -48,8 +45,7 @@ export function useRealtimePreview(audio: RefObject<HTMLAudioElement | null>, st
       const update = () => {
         const current = latest.current, now = context.currentTime
         const audible = current.active && !player.paused && !player.seeking && now >= muteUntil
-        ramp(wet.gain, audible && current.enabled ? 1 : 0, now)
-        ramp(dry.gain, audible && !current.enabled ? 1 : 0, now)
+        ramp(wet.gain, audible ? 1 : 0, now)
         if (limiting !== current.effects.limiter) {
           limiting = current.effects.limiter; limiter.ratio.setTargetAtTime(limiting ? 20 : 1, now, .02)
         }
@@ -70,7 +66,7 @@ export function useRealtimePreview(audio: RefObject<HTMLAudioElement | null>, st
         }
         // Follow the audible (buffer-delayed) position, without repeatedly
         // cancelling automation ramps during playback.
-        gain.gain.setTargetAtTime(envelope(player.currentTime - processor.latencySeconds, current), now, .015)
+        gain.gain.setTargetAtTime(previewGain(player.currentTime - processor.latencySeconds, current), now, .015)
       }
       const fail = () => { player.pause(); setError('实时试听处理失败，请重新打开音频调整页面。') }
       processor.onprocessorerror = fail
@@ -92,6 +88,6 @@ export function useRealtimePreview(audio: RefObject<HTMLAudioElement | null>, st
     })().catch(cause => { if (!disposed) { player.pause(); setError('无法启用实时试听：' + String(cause)) } })
     return () => { disposed = true; cleanup(); void context.close() }
   }, [audio])
-  useEffect(() => { refresh.current() }, [state.enabled, state.active, state.effects, state.start, state.end])
+  useEffect(() => { refresh.current() }, [state.active, state.effects, state.start, state.end])
   return { ready, error }
 }

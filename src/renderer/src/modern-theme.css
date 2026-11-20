@@ -1,0 +1,498 @@
+/* New UI tokens are shared by the workspaces and their overlays. */
+:root[data-ui-version="modern"] {
+  --vd-font-ui: system-ui, "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+  --vd-bg: #0d0d11;
+  --vd-surface: #191a21;
+  --vd-surface-raised: #24262e;
+  --vd-surface-hover: #30323d;
+  --vd-surface-active: #393c48;
+  --vd-border: rgba(219, 224, 249, 0.13);
+  --vd-border-strong: rgba(219, 224, 249, 0.25);
+  --vd-border-subtle: rgba(219, 224, 249, 0.09);
+  --vd-text: #f5f5fa;
+  --vd-text-secondary: #c0c2ce;
+  --vd-text-muted: #a1a4b2;
+  --vd-text-disabled: #808392;
+  --vd-olive-border: var(--vd-border);
+  --vd-danger: #ff777c;
+  --vd-radius-sm: 10px;
+  --vd-radius-md: 18px;
+  --vd-surface-corner: 22px;
+  --vd-pill: 999px;
+  --vd-ease-out: cubic-bezier(0.2, 0.72, 0.24, 1);
+  --vd-shadow-popover: 0 14px 38px rgba(0, 0, 0, 0.38);
+}
+
+:root[data-ui-version="modern"] .app.theme-oled {
+  --vd-bg: #000;
+  --vd-surface: #17181c;
+  --vd-surface-raised: #24262d;
+  --vd-surface-hover: #2e3038;
+}
+
+:root[data-ui-version="modern"] .app.theme-acrylic {
+  --vd-surface: rgba(42, 53, 73, 0.72);
+  --vd-surface-raised: rgba(58, 70, 92, 0.84);
+}
+
+:root[data-ui-version="modern"] .app {
+  color-scheme: dark;
+}
+
+:root[data-ui-version="modern"] .topbar {
+  background: linear-gradient(180deg, var(--vd-surface), var(--vd-bg));
+  border-color: var(--vd-border-subtle);
+}
+
+:root[data-ui-version="modern"] .theme-acrylic .topbar {
+  background: var(--mat-topbar);
+}
+
+:root[data-ui-version="modern"] .brand-mark {
+  border-radius: 4px;
+  box-shadow: 0 0 0 4px var(--vd-accent-soft);
+  margin-inline: 3px;
+}
+
+:root[data-ui-version="modern"] .brand-name {
+  font-size: calc(var(--vd-font-scale, 1) * 19px);
+  letter-spacing: 0.02em;
+  font-weight: 760;
+}
+
+:root[data-ui-version="modern"] .page-tabs {
+  flex-shrink: 1;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 0;
+  border-radius: var(--vd-pill);
+  background: color-mix(in srgb, var(--vd-bg) 52%, var(--vd-surface-raised));
+  box-shadow: inset 0 0 0 1px var(--vd-border);
+}
+
+:root[data-ui-version="modern"] .page-tabs button {
+  flex: 1 0 auto;
+  min-height: 28px;
+  padding: 4px clamp(8px, 1.2vw, 15px);
+  border-radius: var(--vd-pill);
+  font-size: calc(var(--vd-font-scale, 1) * 12px);
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+:root[data-ui-version="modern"] .page-tabs button[aria-pressed="true"] {
+  background: linear-gradient(180deg, var(--vd-surface-active), var(--vd-surface-raised));
+  color: var(--vd-text);
+  box-shadow: inset 0 0 0 1px var(--vd-border), 0 2px 6px #0004;
+}
+
+:root[data-ui-version="modern"] .page-tabs button:hover:not([aria-pressed="true"]) {
+  background: var(--vd-surface-hover);
+  color: var(--vd-text);
+}
+
+:root[data-ui-version="modern"] :is(.settings-close, .shared-settings-btn) {
+  background: var(--vd-surface-raised);
+  border-color: var(--vd-border-subtle);
+  border-radius: 50%;
+  color: var(--vd-text);
+}
+
+:root[data-ui-version="modern"] :is(.settings-close, .shared-settings-btn):hover {
+  background: var(--vd-surface-hover);
+  color: var(--vd-accent);
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) {
+  --clip-radius-panel: var(--vd-surface-corner);
+  --clip-radius-item: var(--vd-radius-md);
+  --clip-radius-control: var(--vd-radius-sm);
+}
+
+:root[data-ui-version="modern"] .adjustment-workspace {
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 12px;
+}
+
+:root[data-ui-version="modern"] :is(.adjustment-editor, .adjustment-controls, .drop-card) {
+  border: 1px solid var(--vd-border);
+  border-radius: var(--vd-surface-corner);
+  background: var(--vd-surface);
+}
+
+:root[data-ui-version="modern"] :is(.adjustment-editor, .adjustment-controls) {
+  padding: 8px;
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) :is(.library-panel, .preview-panel, .timeline-panel, .extracted-panel) {
+  border-color: var(--vd-border);
+  box-shadow: inset 0 1px 0 var(--vd-border-subtle);
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) :is(.library-item, .extracted-item),
+:root[data-ui-version="modern"] .adjustment-results article {
+  border-color: var(--vd-border-subtle);
+  border-radius: var(--vd-radius-md);
+  background: var(--vd-surface-raised);
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) :is(.library-item, .extracted-item).is-active {
+  border-color: var(--vd-accent-border);
+  background: color-mix(in srgb, var(--vd-accent) 11%, var(--vd-surface-raised));
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) .library-item:hover {
+  background: var(--vd-surface-hover);
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) :is(.library-thumb, .extracted-icon) {
+  border-radius: var(--vd-radius-sm);
+  background: var(--vd-accent-soft);
+  color: var(--vd-accent);
+}
+
+:root[data-ui-version="modern"] :is(.clip-app, .adjustment-desk) :is(.library-empty, .extracted-empty) {
+  background: var(--vd-bg);
+  border-color: var(--vd-border);
+}
+
+:root[data-ui-version="modern"] .adjustment-app h2 {
+  font-size: calc(var(--vd-font-scale, 1) * 22px);
+  letter-spacing: -0.025em;
+}
+
+:root[data-ui-version="modern"] .adjustment-heading {
+  flex-wrap: wrap;
+}
+
+:root[data-ui-version="modern"] .adjustment-wave-toolbar > div {
+  flex-wrap: wrap;
+}
+
+:root[data-ui-version="modern"] .adjustment-editor audio:not([hidden]) {
+  display: block;
+  border-radius: var(--vd-pill);
+}
+
+:root[data-ui-version="modern"] .adjustment-editor audio::-webkit-media-controls-panel {
+  background: var(--vd-surface-raised);
+}
+
+:root[data-ui-version="modern"] .adjustment-results {
+  border-color: var(--vd-border-subtle);
+}
+
+:root[data-ui-version="modern"] .adjustment-wave-shell {
+  border-radius: var(--vd-radius-md);
+  background: var(--vd-bg);
+}
+
+:root[data-ui-version="modern"] .adjustment-wave-shell {
+  --vd-adjustment-wave-height: 100px;
+}
+
+:root[data-ui-version="modern"] :is(.waveform, .adjustment-wave) ::part(cursor) {
+  background-color: var(--vd-playhead);
+}
+
+:root[data-ui-version="modern"] .pitch-marker span {
+  border-radius: var(--vd-pill);
+}
+
+:root[data-ui-version="modern"] :is(.format-badge, .file-duration) {
+  border-color: var(--vd-border-subtle);
+  border-radius: var(--vd-pill);
+}
+
+:root[data-ui-version="modern"] :is(.btn, .clip-app .btn, .clip-app .extracted-action) {
+  border-radius: var(--vd-button-radius, var(--vd-pill));
+  letter-spacing: 0;
+}
+
+:root[data-ui-version="modern"] :is(.btn-ghost, .btn-secondary, .clip-app .btn-ghost, .clip-app .extracted-action, .timeline-icon-btn) {
+  background: var(--vd-surface-raised);
+  border-color: var(--vd-border-subtle);
+}
+
+:root[data-ui-version="modern"] :is(.btn-ghost, .btn-secondary, .clip-app .btn-ghost, .clip-app .extracted-action, .timeline-icon-btn):hover:not(:disabled) {
+  background: var(--vd-surface-hover);
+  border-color: var(--vd-border-strong);
+}
+
+:root[data-ui-version="modern"] :is(.btn-primary, .play-btn):hover:not(:disabled) {
+  background: var(--vd-accent-pressed);
+  border-color: var(--vd-accent-pressed);
+}
+
+:root[data-ui-version="modern"] .adjustment-compare > .btn[aria-pressed="true"],
+:root[data-ui-version="modern"] :is(.toggle-btn.is-active, .pitch-point-list button[aria-pressed="true"]) {
+  background: var(--vd-accent-soft);
+  border-color: var(--vd-accent-border);
+  color: var(--vd-accent);
+}
+
+:root[data-ui-version="modern"] :is(.preview-settings-button, .output-select-button, .settings-path-box, .shortcut-key, .settings-text-input, .settings-step, .template-token, .adjustment-app select, .adjustment-app input[type="number"]) {
+  background: var(--vd-surface-raised);
+  border-color: var(--vd-border);
+  border-radius: var(--vd-radius-sm);
+}
+
+:root[data-ui-version="modern"] :is(button, select, input):focus-visible {
+  outline: 2px solid var(--vd-accent);
+  outline-offset: 2px;
+}
+
+/* Settings, popovers, and status surfaces extend the same theme to overlays. */
+:root[data-ui-version="modern"] .settings-backdrop {
+  background: rgba(4, 5, 10, 0.68);
+}
+
+:root[data-ui-version="modern"] .settings-dialog {
+  width: min(1050px, calc(100vw - 40px));
+  height: min(700px, calc(100vh - 40px));
+  min-height: 0;
+  background: var(--vd-bg);
+  border-color: var(--vd-border-strong);
+  border-radius: calc(var(--vd-surface-corner) + 4px);
+}
+
+:root[data-ui-version="modern"] .settings-header {
+  background: var(--vd-surface);
+  border-color: var(--vd-border-subtle);
+}
+
+:root[data-ui-version="modern"] .settings-header h2 {
+  font-size: calc(var(--vd-font-scale, 1) * 22px);
+}
+
+:root[data-ui-version="modern"] .settings-nav {
+  flex-basis: 120px;
+  background: color-mix(in srgb, var(--vd-surface) 58%, var(--vd-bg));
+  overflow: auto;
+}
+
+:root[data-ui-version="modern"] .settings-nav button {
+  flex-shrink: 0;
+  height: auto;
+  min-height: 34px;
+  padding-block: 6px;
+  border-radius: 10px;
+}
+
+:root[data-ui-version="modern"] .settings-nav button.is-active {
+  border-color: var(--vd-border-subtle);
+  background: var(--vd-accent-soft);
+}
+
+:root[data-ui-version="modern"] .settings-content {
+  padding: 20px;
+}
+
+:root[data-ui-version="modern"] .settings-content h3 {
+  font-size: calc(var(--vd-font-scale, 1) * 17px);
+}
+
+:root[data-ui-version="modern"] :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row) {
+  padding: 10px 12px;
+  background: var(--vd-surface);
+  border: 0;
+  border-bottom: 1px solid var(--vd-border-subtle);
+  border-radius: var(--vd-radius-sm);
+}
+
+:root[data-ui-version="modern"] :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory) {
+  min-height: 40px;
+  padding-block: 4px;
+}
+
+:root[data-ui-version="modern"] :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row)
+  + :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row) {
+  border-start-start-radius: 0;
+  border-start-end-radius: 0;
+}
+
+:root[data-ui-version="modern"] :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row)
+  :is(select, .settings-range-control) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+:root[data-ui-version="modern"] :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row)
+  :where(select) {
+  width: min(205px, 48%);
+  border-radius: var(--vd-radius-sm);
+  background: var(--vd-surface-raised);
+}
+
+:root[data-ui-version="modern"] :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row):has(
+  + :is(.settings-select-row, .settings-toggle-row, .settings-range-row, .settings-directory, .shortcut-row)
+) {
+  border-end-start-radius: 0;
+  border-end-end-radius: 0;
+}
+
+:root[data-ui-version="modern"] :is(.settings-toggle-row, .adjustment-controls, .adjustment-wave-toolbar) input[type="checkbox"] {
+  appearance: none;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 36px;
+  height: 22px;
+  margin: 0;
+  border: 1px solid var(--vd-border-strong);
+  border-radius: var(--vd-pill);
+  background: var(--vd-surface-hover) radial-gradient(circle, #fff 0 7px, transparent 7.5px) left center / 20px 20px no-repeat;
+  cursor: pointer;
+}
+
+:root[data-ui-version="modern"] :is(.settings-toggle-row, .adjustment-controls, .adjustment-wave-toolbar) input[type="checkbox"]:checked {
+  background-color: #238b50;
+  background-position: right center;
+}
+
+:root[data-ui-version="modern"] :is(.clip-app .output-menu, .clip-app .preview-settings-menu, .decoder-status, .jobbar, .library-drag-proxy) {
+  background: var(--vd-surface-raised);
+  border-color: var(--vd-border);
+  border-radius: var(--vd-radius-md);
+}
+
+:root[data-ui-version="modern"] :is(.clip-app .output-menu, .clip-app .preview-settings-menu) {
+  padding: 5px;
+  box-shadow: var(--vd-shadow-popover);
+}
+
+:root[data-ui-version="modern"] :is(.output-menu button, .setting-option) {
+  min-height: 28px;
+  border-radius: 8px;
+  font-family: var(--vd-font-ui);
+}
+
+:root[data-ui-version="modern"] :is(.notice-banner, .error-banner) {
+  border-radius: var(--vd-radius-md);
+  background: var(--vd-surface-raised);
+}
+
+@media (max-width: 700px) {
+  :root[data-ui-version="modern"] .settings-body {
+    flex-direction: column;
+  }
+
+  :root[data-ui-version="modern"] .settings-nav {
+    flex: 0 0 auto;
+    flex-direction: row;
+    border-right: 0;
+    border-bottom: 1px solid var(--vd-border);
+  }
+
+  :root[data-ui-version="modern"] .settings-content {
+    padding: 12px;
+  }
+
+  :root[data-ui-version="modern"] :is(.settings-directory, .settings-range-row, .settings-select-row) {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 540px) {
+  :root[data-ui-version="modern"] .page-tabs button {
+    flex: 0 0 auto;
+  }
+}
+
+@media (forced-colors: active) {
+  :root[data-ui-version="modern"] :is(.settings-toggle-row, .adjustment-controls, .adjustment-wave-toolbar) input[type="checkbox"] {
+    appearance: auto;
+    width: 16px;
+    height: 16px;
+  }
+}
+
+/* Entrances provide orientation, while press and selection states stay immediate. */
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-ui-version="modern"] .page-frame:not([hidden]) :is(.clip-app .app-body, .adjustment-workspace) {
+    animation: vdro-fade-in 200ms var(--vd-ease-out);
+  }
+
+  :root[data-ui-version="modern"] :is(.shared-settings-btn, .settings-close, .page-tabs button, .btn, .play-btn, .timeline-icon-btn, .extracted-action) {
+    transition:
+      scale 130ms var(--vd-ease-out),
+      translate 180ms var(--vd-ease-out),
+      background-color 160ms ease-out,
+      border-color 160ms ease-out,
+      color 160ms ease-out,
+      box-shadow 160ms ease-out;
+  }
+
+  :root[data-ui-version="modern"] :is(.shared-settings-btn, .settings-close, .page-tabs button, .btn, .play-btn, .timeline-icon-btn, .extracted-action):active:not(:disabled) {
+    scale: 0.96;
+    translate: 0 0;
+  }
+
+  :root[data-ui-version="modern"] :is(.settings-toggle-row, .adjustment-controls, .adjustment-wave-toolbar) input[type="checkbox"] {
+    transition: background-color 160ms ease-out, background-position 180ms var(--vd-ease-out);
+  }
+
+  :root[data-ui-version="modern"] :is(.library-item, .extracted-item, .settings-nav button) {
+    transition: background-color 180ms ease-out, border-color 180ms ease-out, color 180ms ease-out;
+  }
+
+  :root[data-ui-version="modern"] :is(.settings-backdrop, .drop-overlay) {
+    animation: vdro-fade-in 180ms ease-out;
+  }
+
+  :root[data-ui-version="modern"] :is(.settings-dialog, .drop-card) {
+    animation: vdro-sheet-in 260ms var(--vd-ease-out);
+  }
+
+  :root[data-ui-version="modern"] :is(.output-menu, .preview-settings-menu) {
+    transform-origin: top right;
+    animation: vdro-popover-in 185ms var(--vd-ease-out);
+  }
+
+  :root[data-ui-version="modern"] .preview-settings-menu {
+    transform-origin: bottom right;
+  }
+
+  :root[data-ui-version="modern"] :is(.settings-content > section, .adjustment-results article:first-of-type, .extracted-list .extracted-item:first-child, .notice-banner, .error-banner) {
+    animation: vdro-raise-in 210ms var(--vd-ease-out);
+  }
+}
+
+@keyframes vdro-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes vdro-raise-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes vdro-sheet-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes vdro-popover-in {
+  from { opacity: 0; transform: scale(0.975); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.startup-curtain {
+  position: absolute;
+  z-index: 6;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: var(--vd-bg);
+}
+
+.page-shell.is-launching .window-titlebar {
+  z-index: auto;
+}
+
+.page-shell.is-launching .window-titlebar .brand {
+  position: relative;
+  z-index: 7;
+}

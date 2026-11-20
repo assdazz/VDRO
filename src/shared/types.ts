@@ -20,6 +20,7 @@ export interface MediaInfo {
   duration: number
   formatName: string
   size: number
+  modifiedAt?: number
   audioStreams: AudioStreamInfo[]
   videoStreams: VideoStreamInfo[]
 }
@@ -74,6 +75,7 @@ export interface ExtractedClip {
   format: ExportFormat
   sourceMediaId: string
   sourceName: string
+  projectId?: string
   sourceFilePath?: string
 }
 
@@ -104,6 +106,7 @@ export interface ExportCancelled {
 
 export type AccentColor = 'yellow' | 'blue' | 'green' | 'purple'
 export type ThemeMode = 'dark' | 'oled' | 'acrylic'
+export type UiVersion = 'legacy' | 'modern'
 export type MaterialColor = 'blue' | 'violet' | 'teal' | 'rose' | 'amber' | 'graphite'
 export type SaveMode = 'ask' | 'fixed'
 export type PreviewResolutionSetting = 'follow' | 360 | 480 | 720 | 1080 | 1440 | 2160
@@ -121,6 +124,8 @@ export interface ShortcutSettings {
   setOut: string
   seekBack: string
   seekForward: string
+  selectTool: string
+  splitTool: string
 }
 
 export interface AppSettings {
@@ -135,6 +140,7 @@ export interface AppSettings {
   channels: 1 | 2
   saveMode: SaveMode
   saveDirectory: string
+  mediaDirectory: string
   autoSelectExtracted: boolean
   skipSeconds: SkipSecondsSetting
   customSkipSeconds: number
@@ -149,6 +155,7 @@ export interface AppSettings {
   syncExtractedVideo: boolean
   restoreLayout: boolean
   sidebarCollapsed: boolean
+  uiVersion: UiVersion
   theme: ThemeMode
   materialColor: MaterialColor
   translucent: boolean
@@ -179,6 +186,8 @@ export interface AppInfo {
 
 export interface VdroApi {
   renderAdjustment: (request: AdjustmentRequest) => Promise<ExtractedClip>
+  pickMixTracks: (defaultPath?: string) => Promise<string[]>
+  renderMix: (request: MixRequest) => Promise<ExtractedClip>
   cancelAdjustment: (jobId: string) => Promise<void>
   onAdjustmentProgress: (callback: (event: { jobId: string; progress: number }) => void) => () => void
   getDecoderInfo: (mediaUrl?: string) => Promise<DecoderInfo>
@@ -186,11 +195,11 @@ export interface VdroApi {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
   getAppInfo: () => Promise<AppInfo>
-  chooseDirectory: (defaultPath?: string) => Promise<string | null>
+  chooseDirectory: (defaultPath?: string, purpose?: 'save' | 'media') => Promise<string | null>
   loadLibrary: () => Promise<{ media: ImportedMedia[]; missing: string[] }>
   saveLibrary: (entries: StoredLibraryEntry[]) => Promise<void>
-  loadExtracted: () => Promise<ExtractedClip[]>
-  saveExtractedClips: (clips: ExtractedClip[]) => Promise<void>
+  loadExtracted: (projectId?: string) => Promise<ExtractedClip[]>
+  saveExtractedClips: (clips: ExtractedClip[], projectId?: string) => Promise<void>
   clearTempFiles: () => Promise<void>
   clearPeaksCache: () => Promise<void>
   getPeaksCacheInfo: () => Promise<{ bytes: number; files: number }>
@@ -198,8 +207,8 @@ export interface VdroApi {
   setZoomFactor: (factor: number) => Promise<void>
   setAlwaysOnTop: (enabled: boolean) => Promise<void>
   openDataFolder: () => Promise<void>
-  openFile: () => Promise<ImportedMedia | null>
-  importPath: (filePath: string) => Promise<ImportedMedia>
+  openFile: (defaultPath?: string) => Promise<ImportedMedia | null>
+  importPath: (filePath: string, projectId?: string) => Promise<ImportedMedia>
   getPathForFile: (file: File) => string
   onOpenMedia: (callback: (media: ImportedMedia) => void) => () => void
   getPeaks: (mediaId: string, audioStreamIndex: number) => Promise<PeaksResult>
@@ -222,6 +231,7 @@ export interface AudioAdjustment {
   gainDb: number
   fadeIn: number
   fadeOut: number
+  fadeRange?: { start: number; end: number }
   curve: 'tri' | 'qsin' | 'exp'
   preserveFormants: boolean
   limiter: boolean
@@ -236,6 +246,18 @@ export interface PitchPoint {
 export interface AdjustmentRequest extends ExportRequest {
   jobId: string
   effects: AudioAdjustment
+  reversed?: boolean
+}
+
+export const MAX_MIX_CLIPS = 64
+export const MAX_MIX_OFFSET = 86400
+
+export interface MixTrackRequest extends Pick<AdjustmentRequest, 'mediaId' | 'audioStreamIndex' | 'start' | 'end' | 'effects' | 'reversed'> {
+  offset: number
+}
+
+export interface MixRequest extends Pick<AdjustmentRequest, 'jobId' | 'format' | 'sampleRate' | 'channels' | 'bitrate'> {
+  tracks: MixTrackRequest[]
 }
 
 export interface DecoderInfo {
