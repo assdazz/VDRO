@@ -4,9 +4,9 @@
 
 Realtime pitch processing uses rubberband-wasm 3.3.0 with the Rubber Band R3 engine inside an AudioWorklet. The local WebAssembly asset is bundled for offline use.
 
-Audio preview uses Web Audio with streamed media or scheduled PCM blocks for multitrack playback. Supported PCM WAV files can be read directly. Other sources are prepared for the selected ranges as needed. Gain and fades use Web Audio, and clipping protection uses a DynamicsCompressor. Pitch changes are scheduled on the audio clock. Seeking resets the pitch processor.
+Original audio, adjusted clips, and live mixes use the same Web Audio player. It reads supported PCM WAV files directly and decodes other formats in blocks near the playhead. Pitch automation, gain, and fades follow the audio clock. The preview speed control offers 0.5× to 2× playback with pitch compensation, and clipping protection uses a DynamicsCompressor.
 
-The processor buffers audio before playback. The response delay depends on the sample rate, processor buffering, and audio device.
+Pitch processing buffers audio. The response delay depends on the sample rate, processor buffering, and audio device.
 
 ## Export
 

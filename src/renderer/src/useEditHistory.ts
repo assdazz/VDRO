@@ -41,5 +41,17 @@ export function useEditHistory<T>(initial: T, equal: (left: T, right: T) => bool
 
   const reset = useCallback((present: T) => update({ past: [], present, future: [] }), [update])
 
-  return { ...history, commit, undo, redo, reset }
+  const discard = useCallback((transform: (snapshot: T) => T, same: (left: T, right: T) => boolean) => {
+    const previous = latest.current
+    const present = transform(previous.present)
+    const past = previous.past.map(transform)
+    const future = previous.future.map(transform)
+    return update({
+      past: past.filter((snapshot, index) => !same(snapshot, past[index + 1] ?? present)),
+      present,
+      future: future.filter((snapshot, index) => !same(snapshot, future[index - 1] ?? present)),
+    })
+  }, [update])
+
+  return { ...history, commit, undo, redo, reset, discard }
 }

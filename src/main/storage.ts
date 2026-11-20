@@ -69,7 +69,7 @@ export async function saveStoredExtracted(clips: ExtractedClip[]): Promise<void>
     id: clip.id, filePath: clip.filePath, fileName: clip.fileName,
     start: clip.start, end: clip.end, duration: clip.duration, size: clip.size,
     format: clip.format, sourceMediaId: clip.sourceMediaId, sourceName: clip.sourceName,
-    sourceFilePath: clip.sourceFilePath, projectId: clip.projectId,
+    sourceFilePath: clip.sourceFilePath, sourceProjectMediaId: clip.sourceProjectMediaId, projectId: clip.projectId,
   })))
 }
 

@@ -1,115 +1,56 @@
 # VDRO
 
-> 本地音视频片段截取工具 —— 在波形上选一段，一键导出，数据不出本机。  
-> A local-first Windows desktop tool to cut and export segments from your own audio & video files.
+VDRO 是一款本地 Windows 音频工作台，支持从音频或视频中提取选段、调整音高和音量，以及将多条音轨混成一个文件。素材、项目草稿和输出文件均在本机读写。
 
-VDRO is a Windows desktop app for local audio cutting, pitch adjustment, and multitrack mixing.
-Create or resume a project from the home page, import audio or video, edit waveform regions,
-and export clips or a complete mix through FFmpeg.
+**当前版本 1.3.2+** · [下载安装包](https://github.com/assdazz/VDRO/releases) · [版本说明](docs/release-1.3.2-plus.md)
 
-- **Projects and drafts**: independent project state, automatic draft recovery, missing-media relinking
-- **Multitrack mixing**: drag, trim, split, mute and reverse clips with realtime mix preview
-- **Waveform cutting**: wavesurfer.js waveform with drag selection, in/out points, skip, loop
-- **Picture & audio sync**: video preview linked to the waveform, adjustable resolution / frame rate
-- **Accurate export**: FFmpeg-based extraction with format, quality, sample-rate and channel options, templated filenames
-- **Privacy first**: no uploads, no network service. Settings and records stay on your machine
-  (portable builds: `.userdata` inside the app directory; installed builds: `%APPDATA%\VDRO`)
+## 项目首页
 
-![VDRO main interface with material library and extracted audio](docs/screenshots/vdro-extract.png)
+新建音频剪辑或音频调整项目，也可以继续已有项目和未命名草稿。各项目分别保存素材引用、编辑状态和结果记录。素材被移动或改名后，可从「待恢复素材」重新定位文件。
 
-## Quick start (development)
+![VDRO 项目首页，展示我的项目、最近动态和快捷键提示](docs/screenshots/vdro-main.png)
 
-Requires Node.js 20.19+ (20.x) or 22.12+, and npm.
+## 音频剪辑
 
-```bash
+从素材列表导入音频或视频，在波形上拖动框选，也可以通过起止时间、标记吸附和循环试听微调选段。处理视频时，预览画面和波形使用同一播放位置。选段可提取为音频，也可以送到音频调整工作区继续编辑。
+
+![VDRO 音频剪辑页，展示素材列表、视频预览、波形选区和提取结果](docs/screenshots/vdro-extract.png)
+
+## 音频调整与多轨混音
+
+将素材拖到时间线后，可以移动、裁剪、分割、倒放和设置静音。片段边缘可吸附到其他片段、标记及播放头。工具栏提供播放头处分割和撤销重做。音高标记支持分段变化，单个片段可设置音量、渐入渐出和共振峰保留。
+
+实时试听用于选中片段，实时混音试听用于整条时间线。两者与原音共用进度条和试听音量，支持 0.5× 至 2× 倍速。播放时可以直接修改音高和音量。输出格式、音质和已生成结果放在「调整结果」，可保存单个片段或整个混音。
+
+![VDRO 音频调整页，展示多轨波形、播放速度和调整结果中的输出设置](docs/screenshots/vdro-adjust.png)
+
+支持导出 WAV、MP3、M4A 和 FLAC，默认使用 WAV。采样率、声道和文件命名规则在软件设置中管理。[音频调整使用说明](docs/audio-adjustment.md)
+
+## 安装与数据
+
+Windows x64 安装包内置 Electron、FFmpeg 和 FFprobe。默认安装在 %LOCALAPPDATA%\Programs\VDRO，项目与设置保存在 %APPDATA%\VDRO。运行新版安装包可覆盖升级，卸载时保留用户数据。[安装与覆盖升级](docs/installer-upgrade.md)
+
+设置支持中文和英文、界面主题、字体大小、缩放和自定义快捷键。视频预览可选择自动硬件解码或软件解码。[视频解码说明](docs/video-decoding.md)
+
+## 从源码运行
+
+需要 Node.js 20.19+ 或 22.12+ 和 npm。在 Windows 上克隆仓库后运行以下命令。
+
+```powershell
 git clone https://github.com/assdazz/VDRO.git
-cd vdro
-npm install
-npm run dev        # launch the dev app with hot reload
+cd VDRO
+npm.cmd ci
+npm.cmd run dev
 ```
 
-Build and package:
+构建 Windows x64 安装包，输出到 release/。
 
-```bash
-npm run typecheck  # tsc --noEmit for node & web configs
-npm run build      # electron-vite build -> out/
-npm run dist       # electron-builder -> release/
+```powershell
+npm.cmd run typecheck
+npm.cmd run build
+npm.cmd run dist -- --publish never --config.electronDist=node_modules/electron/dist
 ```
 
-## Audio adjustment
+## 许可证
 
-Switch between audio cutting and audio adjustment using the tabs at the top.
-Audio adjustment supports realtime Rubber Band R3 pitch preview, pitch markers and smooth interpolation,
-waveform zoom and marker snapping, gain, fade-in/out, formant preservation and clipping protection.
-Combine multiple tracks with clip movement, edge trimming, splitting, reversing, muting, and snapping.
-Undo and redo support Ctrl+Z, Ctrl+Y, and Ctrl+Shift+Z.
-Output supports WAV, MP3, M4A and FLAC. Both pages share output defaults, saving options and filename templates.
-The shared settings dialog includes audio-adjustment defaults. See [audio adjustment](docs/audio-adjustment.md)
-and [Rubber Band integration and licensing](docs/audio-engine.md).
-
-## Video decoding
-
-Settings → Preview offers automatic hardware decoding (NVIDIA / AMD / Intel) or software decoding. Restart to apply changes. GPU availability and playback frame counters are shown separately; availability does not confirm the decoder used by the current stream. See [video decoding](docs/video-decoding.md).
-
-## Settings
-
-Click the gear icon at the top-right. The settings cover:
-
-- output defaults: format, quality, sample rate, channels, saving mode, filename template
-- preview defaults: resolution, frame rate, skip duration, loop, extracted-video sync
-- interface: legacy/modern UI, dark/OLED/acrylic themes, six material tint colors, optional translucent window, accent color, UI scale, layout/sidebar restore
-- data: delete confirmations, temporary-file cleanup, waveform-cache limit/cleanup, material-library/extracted-audio persistence
-- shortcuts: play, set-in, set-out, seek back/forward, selection and split tools
-- reset layout, clear temporary files/waveform cache, and reset all settings
-
-## Portable build
-
-Everything needed to run lives in one self-contained folder:
-
-```text
-VDRO\
-  VDRO.exe              launcher (built from launcher/VDROLauncher.cs)
-  runtime\electron.exe  local Electron runtime
-  .userdata\            Electron user data/cache
-  out\                  built app
-```
-
-The launcher builds once via a C# compiler and starts the runtime with
-`--no-sandbox` as compatibility workarounds for non-system
-workspace drives. `start-vdro.cmd` is a fallback that builds (if needed) and
-launches the same `VDRO.exe`. For users on this drive, install once with
-`npm install`; the portable runtime is already in `runtime\`.
-
-## Version 1.3.2
-
-See the [release notes](docs/release-1.3.2.md) for project recovery, the multitrack timeline,
-realtime mixing, editing controls, and fixes.
-
-## Installed build
-
-Standard per-user NSIS installer (assisted mode, no administrator rights):
-
-- default install directory `%LOCALAPPDATA%\Programs\VDRO`; data under `%APPDATA%\VDRO`
-- Chinese/English UI, themes and accent color, interface scale, independent font size
-- remembered window state, always-on-top, start maximized
-- temporary-file retention policy, waveform cache management
-- creates desktop and Start Menu shortcuts; uninstall keeps user data
-- unsigned; SmartScreen may warn; x64 only; no auto-update
-
-## Docs
-
-- UI 截图：`docs/screenshots/`
-
-## License
-
-VDRO project source is provided under the [MIT License](LICENSE). Third-party dependencies retain their own licenses. Rubber Band is GPL licensed with commercial licensing available; the MIT project license alone does not cover a combined binary distribution. See [integration and distribution notes](docs/audio-engine.md).
-
-Note: this prototype bundles FFmpeg from `ffmpeg-static`, which is a GPL build.
-FFmpeg runs as an external binary invoked by the app, but if you redistribute a
-build you should review GPL/LGPL and H.264 obligations — for a closed-source
-commercial release, swap in an LGPL FFmpeg build and review licensing again.
-
-## Limits
-
-Each mix supports up to 64 clips. Pitch automation supports up to 128 markers per clip.
-Waveform zoom ranges from 1× to 32×. Audio exports support WAV, MP3, M4A, and FLAC.
+VDRO 项目源码以 MIT 许可证发布。FFmpeg、Rubber Band 等第三方组件遵循各自的许可证。分发组合构建时请同时查阅相应的许可和源码说明。[MIT 许可证](LICENSE) · [音频引擎与第三方许可](docs/audio-engine.md)

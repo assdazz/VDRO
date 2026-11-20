@@ -125,7 +125,7 @@ export function IconPlus(): JSX.Element {
   )
 }
 
-function IconTrash(): JSX.Element {
+export function IconTrash(): JSX.Element {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path

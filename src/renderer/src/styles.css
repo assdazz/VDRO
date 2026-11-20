@@ -2436,6 +2436,7 @@ select:disabled {
 }
 
 .waveform ::part(cursor) {
+  z-index: 8;
   background: var(--vd-playhead);
 }
 
@@ -3581,3 +3582,19 @@ body.vdro-translucent {
 .missing-media .missing-actions { display: flex; gap: .4em; flex-wrap: wrap; }
 
 .resume-draft { margin: 0 .5em .75em 0; }
+
+.timeline-marker-pin {
+  color: var(--vd-bg);
+  background: var(--vd-playhead);
+  border: 1px solid var(--vd-bg);
+  border-radius: 3px;
+  font: 600 calc(var(--vd-font-scale, 1) * 9px) var(--vd-font-mono);
+}
+.timeline-marker-pin[aria-pressed="true"] { background: var(--vd-accent); }
+.clip-marker-guide {
+  position: absolute;
+  inset-block: 0;
+  border-left: 1px dashed var(--vd-playhead);
+  pointer-events: none;
+  z-index: 3;
+}

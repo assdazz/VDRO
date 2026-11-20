@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 const editIcons = {
   undo: { label: '撤销', path: 'M9 5l-5 5 5 5m-5-5h10a5 5 0 0 1 0 10h-3' },
   redo: { label: '重做', path: 'M15 5l5 5-5 5m5-5H10a5 5 0 0 0 0 10h3' },
+  split: { label: '在播放头处分割', path: 'M4 4h5v16H4M20 4h-5v16h5' },
   delete: { label: '删除', path: 'M4 6h16M7 6v14h10V6M10 6V4h4v2' },
   marker: { label: '添加标记', path: 'M6 5h12v10l-6 5-6-5V5Z' },
   reverse: { label: '倒放', path: 'M16 5l-9 7 9 7V5ZM4 5v14' },
@@ -31,14 +32,16 @@ export function TimelineEditButton({ action, label = editIcons[action].label, di
   </button>
 }
 
-export function TimelineEditControls({ canUndo, canRedo, canDelete, canAddMarker, deleteLabel, onUndo, onRedo, onDelete, onAddMarker, children }: {
+export function TimelineEditControls({ canUndo, canRedo, canSplit, canDelete, canAddMarker, deleteLabel, onUndo, onRedo, onSplit, onDelete, onAddMarker, children }: {
   canUndo: boolean
   canRedo: boolean
+  canSplit?: boolean
   canDelete: boolean
   canAddMarker: boolean
   deleteLabel: string
   onUndo: () => void
   onRedo: () => void
+  onSplit?: () => void
   onDelete: () => void
   onAddMarker: () => void
   children?: ReactNode
@@ -46,6 +49,7 @@ export function TimelineEditControls({ canUndo, canRedo, canDelete, canAddMarker
   return <div className="timeline-edit-controls" role="group" aria-label="编辑工具">
     <TimelineEditButton action="undo" disabled={!canUndo} onClick={onUndo} />
     <TimelineEditButton action="redo" disabled={!canRedo} onClick={onRedo} />
+    {onSplit && <TimelineEditButton action="split" disabled={!canSplit} onClick={onSplit} />}
     <TimelineEditButton action="delete" label={deleteLabel} disabled={!canDelete} onClick={onDelete} />
     <TimelineEditButton action="marker" disabled={!canAddMarker} onClick={onAddMarker} />
     {children}

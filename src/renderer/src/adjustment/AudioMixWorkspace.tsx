@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { MAX_MIX_OFFSET, MAX_MIX_CLIPS } from '@shared/types'
 import type { AppSettings, AudioAdjustment, ExtractedClip, ImportedMedia, MixTrackRequest, PeaksResult } from '@shared/types'
 import { fadeBounds, fadeLevel } from '@shared/fades'
@@ -8,17 +8,18 @@ import { formatTime, MediaLibrary, MediaLibraryItem } from '../MediaLibrary'
 import { WaveformZoomControls } from '../WaveformZoomControls'
 import { TimelineToolPicker, useTimelineToolShortcuts, type TimelineTool } from '../TimelineToolPicker'
 import { TimelineEditButton, TimelineEditControls } from '../TimelineEditControls'
+import { TimelineSnapButton } from '../TimelineSnapButton'
+import { snapTimelineTime } from '../timelineSnap'
 import { TimelinePlayheadHandle, type PlayheadDrag } from '../TimelinePlayheadHandle'
 import { ClipContextMenu, type ClipMenuAction } from './ClipContextMenu'
 import { MissingMediaList } from '../MissingMediaList'
-import { readDraft, saveDraft, reportProjectState } from '../projectDraft'
+import { projectMediaEntry, projectMediaId, readDraft, saveDraft, reportProjectState, type ProjectMediaEntry } from '../projectDraft'
 import { useTimelineHistoryShortcuts } from '../useTimelineHistoryShortcuts'
 import { useEditHistory } from '../useEditHistory'
 import { AdjustmentOutputFields, defaultAdjustment, TimeField, useAdjustmentOutput } from './AdjustmentFields'
 import { AdjustmentTrackHeader, DEFAULT_TRACK_APPEARANCE, type TrackAppearance } from './AdjustmentTrackHeader'
-import { useRealtimePreview } from './useRealtimePreview'
 import { RealtimeMix } from './RealtimeMix'
-import { openPreviewWave, type PreviewWave } from './previewWave'
+import { timelineWave, type PreviewWave } from './previewWave'
 import './audio-mix.css'
 
 type LibraryAsset = {
@@ -32,12 +33,32 @@ type Track = MixTrackRequest & LibraryAsset & {
   muted: boolean
 }
 type MixTimeline = { tracks: Track[]; laneAppearance: Record<number, TrackAppearance> }
-type ProjectTrack = Omit<Track, 'media' | 'mediaId' | 'waveform'> & { path: string }
-type MixProject = { paths: string[]; tracks: ProjectTrack[]; laneAppearance: MixTimeline['laneAppearance']; selected: string; results?: { id: string; fingerprint: string; offset: number }[] }
+type ProjectTrack = Omit<Track, 'media' | 'mediaId' | 'waveform'> & { assetId: string }
+type MixProject = { assets: ProjectMediaEntry[]; tracks: ProjectTrack[]; laneAppearance: MixTimeline['laneAppearance']; selected: string; results?: { id: string; fingerprint: string; offset: number }[] }
+type LegacyMixProject = Omit<MixProject, 'assets' | 'tracks'> & {
+  paths: string[]
+  tracks: (Omit<ProjectTrack, 'assetId'> & { path: string })[]
+}
+
+function readMixDraft(projectId: string): MixProject | null {
+  const draft = readDraft<MixProject | LegacyMixProject>(projectId, 'adjust')
+  if (!draft || 'assets' in draft) return draft
+  const assets: ProjectMediaEntry[] = draft.paths.map(filePath => ({ id: crypto.randomUUID(), filePath }))
+  const tracks = draft.tracks.map(({ path, ...track }) => {
+    let entry = assets.find(item => item.filePath === path)
+    if (!entry) {
+      entry = { id: crypto.randomUUID(), filePath: path }
+      assets.push(entry)
+    }
+    return { ...track, assetId: entry.id }
+  })
+  return { assets, tracks, laneAppearance: draft.laneAppearance, selected: draft.selected, results: draft.results }
+}
+
 type RenderedOutput = { clip: ExtractedClip; fingerprint: string; offset: number }
-type SourcePreview = { mediaId: string; start: number; end: number; url: string; wave: PreviewWave; clip?: ExtractedClip }
-type RealtimeMode = 'realtime-mix' | 'realtime-clip'
-type PlaybackMode = 'mix' | RealtimeMode | 'live' | 'original'
+type ClipPreviewMode = 'realtime-clip' | 'original'
+type RealtimeMode = 'realtime-mix' | ClipPreviewMode
+type PlaybackMode = 'mix' | RealtimeMode | 'idle'
 type DragSource = { asset: LibraryAsset } | { track: Track }
 type DropPlacement = { start: number; end: number; guide?: number }
 type TimelineView = { start: number; length: number }
@@ -48,14 +69,19 @@ const MIN_TIMELINE_DURATION = 10
 const MAX_TIMELINE_ZOOM = 32
 const MIX_ASSET_TYPE = 'application/x-vdro-mix-asset'
 const MIX_CLIP_TYPE = 'application/x-vdro-mix-clip'
+const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2]
 const NEUTRAL: AudioAdjustment = { semitones: 0, gainDb: 0, fadeIn: 0, fadeOut: 0, curve: 'tri', preserveFormants: false, limiter: false }
 const errorText = (error: unknown) => String(error instanceof Error ? error.message : error)
   .replace(/^Error invoking remote method '[^']+': Error: /, '')
 const seconds = (value: number) => value.toFixed(2) + ' s'
 const mixEnd = (track: MixTrackRequest) => track.offset + track.end - track.start
-const orientedRange = (track: Track, original: boolean) => original && track.reversed
-  ? { start: track.media.info.duration - track.end, end: track.media.info.duration - track.start }
-  : { start: track.start, end: track.end }
+function clipForPreview(track: Track, original: boolean): Track {
+  if (!original) return { ...track, muted: false }
+  const range = track.reversed
+    ? { start: track.media.info.duration - track.end, end: track.media.info.duration - track.start }
+    : { start: track.start, end: track.end }
+  return { ...track, ...range, effects: NEUTRAL, muted: false, reversed: false }
+}
 const dragDuration = (source: DragSource) => 'track' in source
   ? source.track.end - source.track.start : source.asset.media.info.duration
 const canSplitAt = (track: Track, time: number) => time <= MAX_MIX_OFFSET &&
@@ -70,13 +96,28 @@ function overlaps(tracks: Track[], lane: number, start: number, end: number, exc
     track.offset < end - 0.000001 && mixEnd(track) > start + 0.000001)
 }
 
+function pruneLaneAppearance(appearance: MixTimeline['laneAppearance'], tracks: readonly { lane: number }[]) {
+  const used = new Set(tracks.map(track => track.lane))
+  const unused = Object.keys(appearance).map(Number).filter(lane => !used.has(lane))
+  if (!unused.length) return appearance
+  const next = { ...appearance }
+  for (const lane of unused) delete next[lane]
+  return next
+}
+
+function sameMixTimeline(left: MixTimeline, right: MixTimeline) {
+  const lanes = Object.keys(left.laneAppearance).map(Number)
+  return left.tracks.length === right.tracks.length &&
+    left.tracks.every((track, index) => track === right.tracks[index]) &&
+    lanes.length === Object.keys(right.laneAppearance).length &&
+    lanes.every(lane => left.laneAppearance[lane] === right.laneAppearance[lane])
+}
+
 function renderTrackKey(track: Track) {
   return { filePath: track.media.filePath, size: track.media.info.size, modifiedAt: track.media.info.modifiedAt,
     audioStreamIndex: track.audioStreamIndex, start: track.start, end: track.end, offset: track.offset,
     effects: track.effects, reversed: track.reversed }
 }
-
-const disposeClip = (clip: ExtractedClip) => window.vdro.deleteExtracted(clip.id, clip.filePath).catch(() => undefined)
 
 export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   projectId?: string
@@ -84,14 +125,12 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   active: boolean
   incoming: { path: string; key: number } | null
 }) {
-  const { present: mixTimeline, past, future, commit: editTimeline, reset: restoreProject, undo, redo } =
+  const { present: mixTimeline, past, future, commit: editTimeline, reset: restoreProject, discard, undo, redo } =
     useEditHistory<MixTimeline>({ tracks: [], laneAppearance: {} })
   const { tracks, laneAppearance } = mixTimeline
   const [library, setLibrary] = useState<LibraryAsset[]>([])
   const [libraryCollapsed, setLibraryCollapsed] = useState(settings.sidebarCollapsed)
   const [selected, setSelected] = useState('')
-  const selectedId = useRef(selected)
-  selectedId.current = selected
   const [clipboard, setClipboard] = useState<Track | null>(null)
   const [clipMenu, setClipMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [selectedMedia, setSelectedMedia] = useState('')
@@ -100,8 +139,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   const [marker, setMarker] = useState('')
   const [results, setResults] = useState<RenderedOutput[]>([])
   const [result, setResult] = useState<RenderedOutput | null>(null)
-  const [previewUrl, setPreviewUrl] = useState('')
-  const [mode, setMode] = useState<PlaybackMode>('live')
+  const [mode, setMode] = useState<PlaybackMode>('idle')
   const [inspector, setInspector] = useState<'parameters' | 'results'>('parameters')
   const [position, setPosition] = useState(0)
   const [zoom, setZoom] = useState(1)
@@ -112,25 +150,24 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   const [trimPreview, setTrimPreview] = useState<{ lane: number; range: TrimRange } | null>(null)
   const [keptRange, setKeptRange] = useState<TrimRange | null>(null)
   const [snap, setSnap] = useState(settings.adjustmentSnap)
-  const [busy, setBusy] = useState<'import' | 'place' | 'prepare' | 'render' | 'save' | null>(null)
+  useEffect(() => setSnap(settings.adjustmentSnap), [settings.adjustmentSnap])
+  const [busy, setBusy] = useState<'import' | 'place' | 'render' | 'save' | null>(null)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState('')
   const [savedPath, setSavedPath] = useState('')
   const [dragging, setDragging] = useState<{ clipId?: string; duration: number } | null>(null)
   const [mixPlaying, setMixPlaying] = useState(false)
   const [mixVolume, setMixVolume] = useState(settings.previewMuted ? 0 : settings.previewVolume)
+  const [playbackRate, setPlaybackRate] = useState(1)
   const mix = useRef<RealtimeMix>(null)
-  const previewCache = useRef(new Map<string, SourcePreview>())
+  const timelineSources = useRef(new Map<string, PreviewWave>())
   const ownedMedia = useRef(new Set<string>())
   const removedAssets = useRef(new Set<string>())
   const activePage = useRef(active)
   activePage.current = active
   const audio = useRef<HTMLAudioElement>(null)
-  const liveAudio = useRef<HTMLAudioElement>(null)
-  const originalAudio = useRef<HTMLAudioElement>(null)
   const timeline = useRef<HTMLDivElement>(null)
   const scrubbing = useRef(false)
-  const pendingPreview = useRef<{ id: string; mode: 'live' | 'original'; time: number } | null>(null)
   const consumed = useRef<number | null>(null)
   const job = useRef<string | null>(null)
   const working = useRef(false)
@@ -157,12 +194,20 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       mediaId, audioStreamIndex, start, end, offset, effects, reversed,
     })), [mixTracks])
   const lastEnd = Math.max(0, ...tracks.map(mixEnd))
-  const realtimeClip = mode === 'realtime-clip'
-  const realtimeMode = mode === 'realtime-mix' || realtimeClip
+  const original = mode === 'original'
+  const previewingClip = mode === 'realtime-clip' || original
+  const realtimeMode = mode === 'realtime-mix' || previewingClip
   const mixing = mode === 'realtime-mix' && mixPlaying
-  const playbackTracks = useMemo(() => realtimeClip ? (selectedTrack ? [{ ...selectedTrack, muted: false }] : [])
-    : mixTracks, [realtimeClip, selectedTrack, mixTracks])
-  const mixEndTime = Math.max(0, ...playbackTracks.filter(track => !track.muted).map(mixEnd))
+  const playingClip = mode === 'realtime-clip' && mixPlaying
+  const playingOriginal = original && mixPlaying
+  const playbackTracks = useMemo(() => previewingClip ? (selectedTrack ? [clipForPreview(selectedTrack, original)] : [])
+    : mixTracks, [previewingClip, original, selectedTrack, mixTracks])
+  const markerTimes = useMemo(() => tracks.flatMap(track =>
+    (track.effects.pitchPoints ?? []).filter(point => point.time >= track.start && point.time <= track.end)
+      .map(point => track.offset + point.time - track.start)), [tracks])
+  const previewStart = previewingClip ? selectedTrack?.offset ?? 0 : 0
+  const previewEnd = Math.max(0, ...playbackTracks.filter(track => !track.muted).map(mixEnd))
+  const previewPosition = clamp(position, previewStart, previewEnd)
   const timelineDuration = lastEnd > MIN_TIMELINE_DURATION ? lastEnd * 1.1 : MIN_TIMELINE_DURATION
   // Leave room to reach the midpoint of a clip appended at the end during a drag.
   const duration = Math.max(timelineDuration, lastEnd + (dragging?.duration ?? 0) / 2)
@@ -170,6 +215,10 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   const maxPan = duration - visibleLength
   const panThumbWidth = `min(100%, max(24px, ${100 / zoom}%))`
   const view = { start: clamp(pan, 0, maxPan), length: visibleLength }
+  function snapPlayheadTime(time: number, min = 0, max = duration) {
+    const tolerance = settings.adjustmentSnapDistance * view.length / Math.max(1, timeline.current?.clientWidth ?? 0)
+    return snap ? snapTimelineTime(time, markerTimes, tolerance, min, max).time : clamp(time, min, max)
+  }
   const mixBitrate = output.quality === 'native' ? 192 : output.bitrate
   const fingerprint = JSON.stringify({
     tracks: mixTracks.filter(track => !track.muted).map(renderTrackKey),
@@ -181,26 +230,25 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   })
   const cachedMix = results.find(item => item.fingerprint === fingerprint)
   const selectedLocked = selectedTrack ? laneAppearance[selectedTrack.lane]?.locked === true : false
+  const playheadClip = selectedTrack && !selectedLocked && !busy && tracks.length < MAX_MIX_CLIPS
+    ? tracks.find(track => track.lane === selectedTrack.lane && canSplitAt(track, position))
+    : undefined
   const canSelectRange = tracks.some(track => !laneAppearance[track.lane]?.locked)
   const rangeFeedback = trimPreview?.range ?? keptRange
   const selectedAsset = library.find(asset => asset.media.id === selectedMedia)
   const playheadVisible = position >= view.start && position <= view.start + view.length
-  const realtime = useRealtimePreview(liveAudio, {
-    active: active && mode === 'live', effects: selectedTrack?.effects ?? NEUTRAL,
-    start: selectedTrack?.start ?? 0, end: selectedTrack?.end ?? 0,
-  })
+  const [unavailable, setUnavailable] = useState<{ assets: ProjectMediaEntry[]; tracks: ProjectTrack[] }>({ assets: [], tracks: [] })
   const lanes = [...new Set(tracks.map(track => track.lane))].sort((left, right) => left - right)
-  const newLane = (lanes.at(-1) ?? -1) + 1
+  const newLane = Math.max(lanes.at(-1) ?? -1, ...unavailable.tracks.map(track => track.lane)) + 1
   lanes.push(newLane)
 
-  const [unavailable, setUnavailable] = useState<{ paths: string[]; tracks: ProjectTrack[] }>({ paths: [], tracks: [] })
   const [workspaceReady, setWorkspaceReady] = useState(!projectId)
   useEffect(() => {
     if (!projectId) return
     let cancelled = false
     const imported: ImportedMedia[] = []
     async function restore() {
-      const draft = readDraft<MixProject>(projectId!, 'adjust')
+      const draft = readMixDraft(projectId!)
       if (!draft) return
       if (draft.results?.length) {
         const files = await window.vdro.loadExtracted(projectId + ':adjust')
@@ -211,41 +259,48 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
           return clip ? [{ clip, fingerprint: item.fingerprint, offset: item.offset }] : []
         }))
       }
-      const paths = new Set([...draft.paths, ...draft.tracks.map(track => track.path)])
       const assets = new Map<string, LibraryAsset>()
       const restored: Track[] = []
-      for (const path of paths) {
+      for (const entry of draft.assets) {
         if (cancelled) return
         try {
-          const media = await window.vdro.importPath(path)
+          const media = { ...await window.vdro.importPath(entry.filePath), projectMediaId: entry.id }
           ownedMedia.current.add(media.id)
           imported.push(media)
           if (cancelled) return
           const stream = media.info.audioStreams.find(item => item.isDefault) ?? media.info.audioStreams[0]
           if (!stream) throw new Error('该文件没有音轨')
-          assets.set(path, { media, audioStreamIndex: stream.index })
+          assets.set(entry.id, { media, audioStreamIndex: stream.index })
         } catch { /* The path is retained for recovery below. */ }
       }
       const waves = new Map<string, PeaksResult>()
-      const failedPaths = new Set([...paths].filter(path => !assets.has(path)))
-      for (const { path, ...item } of draft.tracks) {
+      const failedAssets = new Set(draft.assets.filter(entry => !assets.has(entry.id)).map(entry => entry.id))
+      for (const { assetId, ...item } of draft.tracks) {
         if (cancelled) return
-        const asset = assets.get(path)
-        if (!asset || failedPaths.has(path)) continue
+        const asset = assets.get(assetId)
+        if (!asset || failedAssets.has(assetId)) continue
         try {
           const key = asset.media.id + ':' + item.audioStreamIndex
           const waveform = waves.get(key) ?? await window.vdro.getPeaks(asset.media.id, item.audioStreamIndex)
           waves.set(key, waveform)
           restored.push({ ...asset, ...item, mediaId: asset.media.id, waveform })
-        } catch { failedPaths.add(path) }
+        } catch { failedAssets.add(assetId) }
       }
       if (cancelled) return
-      setUnavailable({ paths: [...failedPaths], tracks: draft.tracks.filter(track => failedPaths.has(track.path)) })
-      setLibrary(draft.paths.flatMap(path => assets.get(path) && !failedPaths.has(path) ? [assets.get(path)!] : []))
-      const validTracks = restored.filter(track => !failedPaths.has(track.media.filePath))
-      restoreProject({ tracks: validTracks, laneAppearance: draft.laneAppearance })
+      const pendingTracks = draft.tracks.filter(track => failedAssets.has(track.assetId))
+      setUnavailable({
+        assets: draft.assets.filter(entry => failedAssets.has(entry.id)),
+        tracks: pendingTracks,
+      })
+      setLibrary([...assets.values()].filter(asset => !failedAssets.has(projectMediaId(asset.media))))
+      const validTracks = restored.filter(track => !failedAssets.has(projectMediaId(track.media)))
+      restoreProject({
+        tracks: validTracks,
+        laneAppearance: pruneLaneAppearance(draft.laneAppearance, [...validTracks, ...pendingTracks]),
+      })
       setSelected(draft.selected)
-      if (failedPaths.size) setError(failedPaths.size + ' 个素材文件已失效，已从素材库跳过')
+      setSelectedMedia(validTracks.find(track => track.id === draft.selected)?.mediaId ?? '')
+      if (failedAssets.size) setError(failedAssets.size + ' 个素材文件已失效，已从素材库跳过')
     }
     void restore().then(() => { if (!cancelled) setWorkspaceReady(true) }).catch(cause => {
       if (!cancelled) {
@@ -261,9 +316,9 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   useEffect(() => {
     if (!projectId || !workspaceReady) return
     const draft: MixProject = {
-      paths: [...library.map(asset => asset.media.filePath), ...unavailable.paths], laneAppearance, selected,
+      assets: [...library.map(asset => projectMediaEntry(asset.media)), ...unavailable.assets], laneAppearance, selected,
       results: results.map(({ clip, fingerprint, offset }) => ({ id: clip.id, fingerprint, offset })),
-      tracks: tracks.map(({ media, mediaId, waveform, ...item }) => ({ ...item, path: media.filePath })).concat(unavailable.tracks),
+      tracks: tracks.map(({ media, mediaId, waveform, ...item }) => ({ ...item, assetId: projectMediaId(media) })).concat(unavailable.tracks),
     }
     try { saveDraft(projectId, 'adjust', draft) } catch { setError('无法保存项目，请重试。') }
   }, [projectId, workspaceReady, library, laneAppearance, tracks, selected, results, unavailable])
@@ -285,10 +340,8 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
 
   useEffect(() => {
     if (!active || mode !== 'mix') audio.current?.pause()
-    if (!active || mode !== 'live') liveAudio.current?.pause()
-    if (!active || mode !== 'original') originalAudio.current?.pause()
     if (!active || !realtimeMode) mix.current?.pause()
-    if (!active) { playOnLoad.current = null; pendingPreview.current = null; dismissClipMenu() }
+    if (!active) { playOnLoad.current = null; dismissClipMenu() }
   }, [active, mode, realtimeMode, dismissClipMenu])
 
   useEffect(() => {
@@ -298,20 +351,35 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   }, [])
 
   useEffect(() => {
-    const waves = sourceWaves(playbackTracks)
-    if (mixPlaying && playbackTracks.some(track => !track.muted && !waves.has(track.id))) {
-      void startRealtimePlayback(realtimeClip ? 'realtime-clip' : 'realtime-mix', playbackTracks,
-        playbackTracks.filter(track => !track.muted), position)
-    } else {
-      mix.current?.update(playbackTracks, waves)
-    }
-  }, [playbackTracks])
+    mix.current?.update(playbackTracks, sourceWaves(playbackTracks), !original)
+  }, [playbackTracks, original])
+
+  useEffect(() => {
+    if (!active || mixPlaying || busy || !tracks.length) return
+    const timer = window.setTimeout(() => {
+      const candidates = mixTracks.filter(track => !track.muted && track.offset <= position && position < mixEnd(track))
+      if (selectedTrack && !candidates.includes(selectedTrack)) candidates.unshift(selectedTrack)
+      // Limit speculative reads on dense timelines. Playback schedules every audible track.
+      const initial = candidates.slice(0, 4)
+      mix.current?.prime(initial, sourceWaves(initial), position)
+    }, 100)
+    return () => window.clearTimeout(timer)
+  }, [active, mixPlaying, busy, position, mixTracks, selectedTrack, tracks.length])
 
   useEffect(() => {
     setMixVolume(settings.previewMuted ? 0 : settings.previewVolume)
   }, [settings.previewMuted, settings.previewVolume])
 
   useEffect(() => mix.current?.setVolume(mixVolume / 100), [mixVolume])
+
+  useEffect(() => {
+    mix.current?.setPlaybackRate(playbackRate)
+    const player = audio.current
+    if (player) {
+      player.defaultPlaybackRate = playbackRate
+      player.playbackRate = playbackRate
+    }
+  }, [playbackRate])
 
   useEffect(() => {
     if (!removedAssets.current.size) return
@@ -326,8 +394,6 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
 
   useEffect(() => () => {
     if (job.current) void window.vdro.cancelAdjustment(job.current)
-    for (const source of previewCache.current.values()) if (source.clip) void disposeClip(source.clip)
-    previewCache.current.clear()
     for (const id of ownedMedia.current) void window.vdro.releaseMedia(id).catch(() => undefined)
     ownedMedia.current.clear()
   }, [])
@@ -338,12 +404,10 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       else pausePreview()
     }
     const cleared = () => {
-      previewCache.current.clear()
-      setPreviewUrl('')
       setResult(null)
       setResults([])
       setSavedPath('')
-      setMode('live')
+      setMode('idle')
     }
     const guardProject = (event: Event) => { if (working.current) event.preventDefault() }
     window.addEventListener('vdro:before-project-change', guardProject)
@@ -356,18 +420,18 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     }
   }, [])
 
-  async function relinkAsset(path: string, choose: boolean) {
+  async function relinkAsset(entry: ProjectMediaEntry, choose: boolean) {
     if (working.current) return
     working.current = true
     setBusy('import')
     setError('')
     let media: ImportedMedia | null = null
     try {
-      media = choose ? await window.vdro.openFile(settings.mediaDirectory) : await window.vdro.importPath(path)
+      media = choose ? await window.vdro.openFile(settings.mediaDirectory) : await window.vdro.importPath(entry.filePath)
       if (!media) return
       const stream = media.info.audioStreams.find(item => item.isDefault) ?? media.info.audioStreams[0]
       if (!stream) throw new Error('该文件没有音轨')
-      const pending = unavailable.tracks.filter(track => track.path === path)
+      const pending = unavailable.tracks.filter(track => track.assetId === entry.id)
       if (pending.some(track => track.end > media!.info.duration + .001 ||
         (track.effects.fadeRange?.end ?? 0) > media!.info.duration + .001 ||
         track.effects.pitchPoints?.some(point => point.time > media!.info.duration + .001))) {
@@ -382,8 +446,8 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
         const index = media.info.audioStreams.some(item => item.index === track.audioStreamIndex) ? track.audioStreamIndex : stream.index
         if (!waves.has(index)) waves.set(index, await window.vdro.getPeaks(media.id, index))
       }
-      const asset = { media, audioStreamIndex: stream.index }
-      const recovered = pending.map(({ path: _path, ...track }) => {
+      const asset = { media: { ...media, projectMediaId: entry.id }, audioStreamIndex: stream.index }
+      const recovered = pending.map(({ assetId: _assetId, ...track }) => {
         const audioStreamIndex = asset.media.info.audioStreams.some(item => item.index === track.audioStreamIndex)
           ? track.audioStreamIndex : stream.index
         return { ...track, ...asset, audioStreamIndex, waveform: waves.get(audioStreamIndex)!, mediaId: asset.media.id }
@@ -393,8 +457,8 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       setLibrary(previous => previous.some(item => item.media.id === asset.media.id) ? previous : [...previous, asset])
       restoreProject({ tracks: [...tracks, ...recovered], laneAppearance })
       setUnavailable(previous => ({
-        paths: previous.paths.filter(item => item !== path),
-        tracks: previous.tracks.filter(item => item.path !== path),
+        assets: previous.assets.filter(item => item.id !== entry.id),
+        tracks: previous.tracks.filter(item => item.assetId !== entry.id),
       }))
       if (recovered.length) selectTrack(recovered[0])
       media = null
@@ -455,14 +519,10 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   function selectTrack(track?: Track) {
     setInspector('parameters')
     if (track?.id === selected) return
-    if (realtimeClip) {
+    if (previewingClip) {
       mix.current?.pause()
-      setMode('live')
+      setMode('idle')
     }
-    liveAudio.current?.pause()
-    originalAudio.current?.pause()
-    pendingPreview.current = null
-    setPreviewUrl(track ? findSource(track, true)?.url ?? '' : '')
     setSelected(track?.id ?? '')
     if (track) setSelectedMedia(track.mediaId)
     setMarker('')
@@ -504,10 +564,35 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   function removeAsset(asset: LibraryAsset) {
     if (working.current) return
     const { id, fileName } = asset.media
-    if (settings.confirmDelete && !window.confirm(translateUiText(`确定从素材栏移除“${fileName}”吗？源文件不会被删除。`, settings.language))) return
+    if (settings.confirmDelete && !window.confirm(translateUiText(`确定移除素材“${fileName}”及其时间线片段吗？`, settings.language))) return
+    const remaining = discard(snapshot => {
+      const tracks = snapshot.tracks.filter(track => track.mediaId !== id)
+      if (tracks.length === snapshot.tracks.length) return snapshot
+      return { tracks, laneAppearance: pruneLaneAppearance(snapshot.laneAppearance, [...tracks, ...unavailable.tracks]) }
+    }, sameMixTimeline)
+    if (clipboard?.mediaId === id) setClipboard(null)
+    if (selectedTrack?.mediaId === id) selectTrack(remaining.tracks[0])
+    if (remaining !== mixTimeline) {
+      pausePreview()
+      setSavedPath('')
+      setTrimPreview(null)
+      setKeptRange(null)
+    }
     removedAssets.current.add(id)
     setLibrary(previous => previous.filter(item => item.media.id !== id))
-    if (selectedMedia === id) setSelectedMedia('')
+    if (selectedMedia === id && (selectedTrack?.mediaId !== id || !remaining.tracks.length)) setSelectedMedia('')
+  }
+
+  function removeUnavailableAsset(entry: ProjectMediaEntry) {
+    if (working.current) return
+    const pendingTracks = unavailable.tracks.filter(track => track.assetId !== entry.id)
+    setUnavailable({ assets: unavailable.assets.filter(item => item.id !== entry.id), tracks: pendingTracks })
+    discard(snapshot => {
+      const laneAppearance = pruneLaneAppearance(snapshot.laneAppearance, [...snapshot.tracks, ...pendingTracks])
+      return laneAppearance === snapshot.laneAppearance ? snapshot : { ...snapshot, laneAppearance }
+    }, sameMixTimeline)
+    if (unavailable.tracks.some(track => track.assetId === entry.id && track.id === selected)) setSelected('')
+    setError('')
   }
 
   async function placeAsset(asset: LibraryAsset, lane: number, offset: number) {
@@ -535,7 +620,6 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
         ...asset, id: crypto.randomUUID(), lane, mediaId: media.id, waveform, offset,
         start: 0, end: media.info.duration, effects: defaultAdjustment(settings), muted: false,
       }
-      if (mixPlaying) await prepareSource(track)
       audio.current?.pause()
       editTimeline({ tracks: [...tracks, track], laneAppearance })
       selectTrack(track)
@@ -548,29 +632,30 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     }
   }
 
-  function changeTrack(id: string, change: (track: Track) => Track, group?: object) {
-    if (working.current) return false
+  function changeTrack(id: string, change: (track: Track) => Track, group?: object): Track | undefined {
+    if (working.current) return
     const track = tracks.find(item => item.id === id)
-    if (!track || laneAppearance[track.lane]?.locked) return false
+    if (!track || laneAppearance[track.lane]?.locked) return
     const next = change(track)
-    if (laneAppearance[next.lane]?.locked || next.offset < 0 || next.offset > MAX_MIX_OFFSET) return false
+    if (laneAppearance[next.lane]?.locked || next.offset < 0 || next.offset > MAX_MIX_OFFSET) return
     if (overlaps(tracks, next.lane, next.offset, mixEnd(next), id)) {
       setError('该位置与同一轨道上的片段重叠。')
-      return false
+      return
     }
     if (next.lane === track.lane && next.offset === track.offset && next.start === track.start && next.end === track.end &&
       next.muted === track.muted && next.reversed === track.reversed &&
-      (next.effects === track.effects || JSON.stringify(next.effects) === JSON.stringify(track.effects))) return true
+      (next.effects === track.effects || JSON.stringify(next.effects) === JSON.stringify(track.effects))) return track
     audio.current?.pause()
     setError('')
     setSavedPath('')
     const updated = tracks.map(item => item.id === id ? next : item)
     editTimeline({ tracks: updated, laneAppearance: appearanceAfterEdit(updated, track.lane) }, group)
-    return true
+    return next
   }
 
   function appearanceAfterEdit(updated: Track[], lane: number) {
-    if (!laneAppearance[lane] || updated.some(track => track.lane === lane)) return laneAppearance
+    if (!laneAppearance[lane] || updated.some(track => track.lane === lane) ||
+      unavailable.tracks.some(track => track.lane === lane)) return laneAppearance
     const next = { ...laneAppearance }
     delete next[lane]
     return next
@@ -600,10 +685,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
         fadeIn: track.effects.fadeOut, fadeOut: track.effects.fadeIn,
       },
     }
-    if (!changeTrack(track.id, () => next)) return
-    if (mode === 'live' && track.id === selected && liveAudio.current && !liveAudio.current.paused) {
-      void startRealtimePlayback('realtime-clip', [{ ...next, muted: false }], [next], clipPlaybackPosition(next))
-    }
+    changeTrack(track.id, () => next)
   }
 
   function runClipAction(action: ClipMenuAction, track: Track) {
@@ -612,6 +694,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     if (action === 'copy') setClipboard(track)
     else if (action === 'cut') { if (removeTrack(track.id)) setClipboard(track) }
     else if (action === 'reverse') reverseTrack(track)
+    else if (action === 'mute') changeTrack(track.id, current => ({ ...current, muted: !current.muted }))
     else removeTrack(track.id)
   }
 
@@ -629,10 +712,6 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     const next = { ...clipboard, id: crypto.randomUUID(), lane, offset }
     working.current = true
     try {
-      if (mixing && !findSource(next)) {
-        setBusy('prepare')
-        await prepareSource(next)
-      }
       if (!activePage.current) return
       audio.current?.pause()
       editTimeline({ tracks: [...tracks, next], laneAppearance })
@@ -681,8 +760,6 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     setSavedPath('')
     setTrimPreview(null)
     setKeptRange(null)
-    if (mixPlaying && next.tracks.some(track => !track.muted && !next.laneAppearance[track.lane]?.ignored &&
-      !next.laneAppearance[track.lane]?.muted && !findSource(track))) mix.current?.pause()
 
     const target = next.tracks.find(track => !tracks.some(previous => previous.id === track.id)) ??
       next.tracks.find(track => track.id === selected) ?? next.tracks[0]
@@ -698,16 +775,14 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     seek(time)
   }
 
-  function seek(time: number) {
+  function seek(time: number, min = 0, max = duration) {
+    time = snapPlayheadTime(time, min, max)
     setPosition(time)
     if (realtimeMode) {
-      if (mixPlaying) void mix.current?.play(time)
-      return
-    }
-    const player = mode === 'live' ? liveAudio.current : originalAudio.current
-    if (mode !== 'mix' && player?.readyState && selectedTrack && previewUrl) {
-      const { start, end } = orientedRange(selectedTrack, mode === 'original')
-      player.currentTime = clamp(start + time - selectedTrack.offset, start, end)
+      if (mixPlaying) {
+        if (time < previewEnd) void mix.current?.play(Math.max(previewStart, time))
+        else mix.current?.pause()
+      }
     } else if (mode === 'mix' && result?.fingerprint === fingerprint && audio.current?.readyState) {
       audio.current.currentTime = Math.min(result.clip.duration, time)
     }
@@ -716,10 +791,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   function startPlayheadDrag(): PlayheadDrag | undefined {
     const width = timeline.current?.getBoundingClientRect().width ?? 0
     if (working.current || !width) return
-    const player = realtimeMode ? null : mode === 'live' ? liveAudio.current
-      : mode === 'original' ? originalAudio.current : audio.current
-    const preview = mode === 'mix' ? result && { offset: result.offset, start: 0, end: result.clip.duration }
-      : selectedTrack && { ...orientedRange(selectedTrack, mode === 'original'), offset: selectedTrack.offset }
+    const player = mode === 'mix' ? audio.current : null
     const resumeMix = realtimeMode && mixPlaying
     const resumePlayer = player && !player.paused
     let target = position
@@ -728,19 +800,20 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     player?.pause()
     return {
       move: deltaX => {
-        target = clamp(position + deltaX * view.length / width, view.start, view.start + view.length)
+        target = snapPlayheadTime(position + deltaX * view.length / width, view.start, view.start + view.length)
         setPosition(target)
       },
       finish: resume => {
         scrubbing.current = false
         if (!resume || !activePage.current) return
         setPosition(target)
-        if (resumeMix && target < mixEndTime) void mix.current?.play(target)
-        if (!player?.readyState || !preview) return
-        const time = preview.start + target - preview.offset
-        if (time < preview.start || time > preview.end) return
+        if (resumeMix && target < previewEnd) void mix.current?.play(Math.max(previewStart, target))
+        if (!player?.readyState || !result) return
+        const { offset, clip } = result
+        const time = target - offset
+        if (time < 0 || time > clip.duration) return
         player.currentTime = time
-        if (resumePlayer && time < preview.end) void player.play().catch(cause => setError(errorText(cause)))
+        if (resumePlayer && time < clip.duration) void player.play().catch(cause => setError(errorText(cause)))
       },
     }
   }
@@ -771,18 +844,16 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     const anchors = [
       position,
       ...others.flatMap(other => [other.offset, mixEnd(other)]),
-      ...(track.effects.pitchPoints ?? []).map(point => track.offset + point.time - track.start),
+      ...markerTimes,
     ]
     const tolerance = settings.adjustmentSnapDistance * view.length / Math.max(1, timeline.current?.clientWidth ?? 0)
     let guide: number | undefined
     function nearest(time: number, min: number, max: number) {
       const clamped = clamp(time, min, max)
       if (!snap || !allowSnap) return clamped
-      const target = anchors.reduce((best, anchor) =>
-        anchor >= min - 1e-6 && anchor <= max + 1e-6 && Math.abs(anchor - time) < Math.abs(best - time) ? anchor : best, Infinity)
-      if (Math.abs(target - time) > tolerance) return clamped
-      guide = target
-      return clamp(target, min, max)
+      const result = snapTimelineTime(time, anchors, tolerance, min, max)
+      if (result.guide !== undefined) guide = result.guide
+      return result.time
     }
     const from = edge === 'end' ? track.offset : nearest(first,
       edge === 'start' ? earliest : track.offset, end - MIN_CLIP_DURATION)
@@ -834,7 +905,9 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
 
     const tolerance = settings.adjustmentSnapDistance * dropView.length / Math.max(1, bounds.width)
     const anchors = [position, 0, ...tracks.filter(track => track.id !== moving?.id)
-      .flatMap(track => [track.offset, mixEnd(track)])]
+      .flatMap(track => [track.offset, mixEnd(track),
+        ...(track.effects.pitchPoints ?? []).filter(point => point.time >= track.start && point.time <= track.end)
+          .map(point => track.offset + point.time - track.start)])]
     let closestDistance = Infinity
     for (const guide of anchors) {
       for (const candidate of [guide, guide - span]) {
@@ -925,105 +998,44 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   function pausePreview() {
     mix.current?.pause()
     audio.current?.pause()
-    liveAudio.current?.pause()
-    originalAudio.current?.pause()
-    pendingPreview.current = null
     playOnLoad.current = null
-  }
-
-  function findSource(track: Track, full = false) {
-    const range = orientedRange(track, true)
-    return [...previewCache.current.values()].find(source => source.mediaId === track.mediaId &&
-      source.start <= (full ? 0 : range.start) && source.end >= (full ? track.media.info.duration : range.end))
   }
 
   function sourceWaves(playing: Track[]) {
     const waves = new Map<string, PreviewWave>()
     for (const track of playing) {
-      const source = findSource(track)
-      if (!source) continue
-      const { wave } = source
-      // Translate source-time frames to frames in the decoded excerpt, in either playback direction.
-      const origin = Math.round((track.reversed ? track.media.info.duration - source.end : source.start) * wave.sampleRate)
-      waves.set(track.id, origin === 0 ? wave : {
-        sampleRate: wave.sampleRate, frames: origin + wave.frames,
-        blockStart: frame => origin + wave.blockStart(Math.max(0, frame - origin)),
-        readBlock: (context, first, reversed) => wave.readBlock(context, first - origin, reversed),
-      })
+      const key = track.mediaId + ':' + track.audioStreamIndex
+      let wave = timelineSources.current.get(key)
+      if (!wave) {
+        wave = timelineWave(track.media, track.audioStreamIndex)
+        timelineSources.current.set(key, wave)
+      }
+      waves.set(track.id, wave)
     }
     return waves
   }
 
   function releaseSource(id: string) {
-    ownedMedia.current.delete(id)
-    for (const [key, source] of previewCache.current) {
-      if (source.mediaId !== id) continue
-      previewCache.current.delete(key)
-      if (source.clip) void disposeClip(source.clip)
+    for (const key of timelineSources.current.keys()) {
+      if (key.startsWith(id + ':')) timelineSources.current.delete(key)
     }
+    ownedMedia.current.delete(id)
     void window.vdro.releaseMedia(id).catch(() => undefined)
   }
 
-  async function prepareSource(track: Track, full = false) {
-    const cached = findSource(track, full)
-    if (cached) return cached
-    const { media } = track
-    const audioStream = media.info.audioStreams.find(stream => stream.index === track.audioStreamIndex)
-    if (media.info.audioStreams.length === 1 && audioStream?.codec === 'pcm_s16le') {
-      const wave = await openPreviewWave(media.url).catch(() => null)
-      if (wave) {
-        const source = { mediaId: media.id, start: 0, end: media.info.duration, url: media.url, wave }
-        previewCache.current.set(track.mediaId, source)
-        return source
-      }
-    }
-    const range = full ? { start: 0, end: media.info.duration } : orientedRange(track, true)
-    const clip = await runRender(jobId => window.vdro.renderAdjustment({
-      jobId, mediaId: track.mediaId, audioStreamIndex: track.audioStreamIndex, ...range,
-      format: 'wav', bitrate: 192, channels: audioStream?.channels === 1 ? 1 : 2, sampleRate: 48000, effects: NEUTRAL,
-    }))
-    try {
-      const wave = await openPreviewWave(clip.url)
-      if (!wave) throw new Error('无法读取混音试听素材。')
-      const source = { mediaId: media.id, ...range, url: clip.url, wave, clip }
-      previewCache.current.set(clip.id, source)
-      return source
-    } catch (cause) {
-      void disposeClip(clip)
-      throw cause
-    }
-  }
-
-  async function startRealtimePlayback(nextMode: RealtimeMode, playingTracks: Track[], prepareTracks: Track[], time: number) {
+  async function startRealtimePlayback(nextMode: RealtimeMode, playingTracks: Track[], time: number) {
     const player = mix.current
     if (!player || working.current) return
     pausePreview()
     setMode(nextMode)
     setError('')
-    working.current = true
-    setBusy('prepare')
-    try {
-      await player.activate()
-      for (const track of prepareTracks) {
-        if (!activePage.current) return
-        await prepareSource(track)
-      }
-      if (!activePage.current || mix.current !== player) return
-      if (nextMode === 'realtime-clip' && selectedId.current !== playingTracks[0]?.id) return
-      player.update(playingTracks, sourceWaves(playingTracks))
-      await player.play(time)
-    } catch (cause) {
-      const message = errorText(cause)
-      if (message !== 'CANCELLED') setError(message)
-    } finally {
-      working.current = false
-      setBusy(null)
-    }
+    player.update(playingTracks, sourceWaves(playingTracks), nextMode !== 'original')
+    await player.play(time)
   }
 
   function toggleMix() {
     if (mixing) { mix.current?.pause(); return }
-    if (audibleTracks.length) void startRealtimePlayback('realtime-mix', mixTracks, mixTracks.filter(track => !track.muted), position)
+    if (audibleTracks.length) void startRealtimePlayback('realtime-mix', mixTracks, position)
   }
 
   function clipPlaybackPosition(track: Track) {
@@ -1108,81 +1120,14 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     }
   }
 
-  async function audition(kind: 'live' | 'original') {
-    const track = selectedTrack
-    if (!track || working.current || (kind === 'live' && (!realtime.ready || realtime.error))) return
-    if (kind === 'live' && (track.reversed || realtimeClip)) {
-      if (realtimeClip && mixPlaying) { mix.current?.pause(); return }
-      await startRealtimePlayback('realtime-clip', [{ ...track, muted: false }], [track], clipPlaybackPosition(track))
+  function audition(kind: ClipPreviewMode, track = selectedTrack) {
+    if (!track || working.current) return
+    if (kind === mode && mixPlaying) {
+      mix.current?.pause()
       return
     }
-    pausePreview()
-    setError('')
-    const { start } = orientedRange(track, kind === 'original')
-    const time = start + clipPlaybackPosition(track) - track.offset
-    pendingPreview.current = { id: track.id, mode: kind, time }
-    setMode(kind)
-    if (previewUrl) {
-      const player = kind === 'live' ? liveAudio.current : originalAudio.current
-      if (player) applyClipPreview(kind, player)
-      return
-    }
-    working.current = true
-    setBusy('prepare')
-    try {
-      const source = await prepareSource(track, true)
-      setPreviewUrl(source.url)
-    } catch (cause) {
-      pendingPreview.current = null
-      const message = errorText(cause)
-      if (message !== 'CANCELLED') setError(message)
-    } finally {
-      working.current = false
-      setBusy(null)
-    }
-  }
-
-  function applyClipPreview(kind: 'live' | 'original', player: HTMLAudioElement) {
-    const pending = pendingPreview.current
-    if (!active || !pending || pending.mode !== kind || pending.id !== selectedTrack?.id ||
-      player.currentSrc !== previewUrl || !player.readyState) return
-    pendingPreview.current = null
-    if (player.currentTime !== pending.time) player.currentTime = pending.time
-    void player.play().catch(() => undefined)
-  }
-
-  useEffect(() => {
-    const player = mode === 'live' ? liveAudio.current : mode === 'original' ? originalAudio.current : null
-    if (player && (mode === 'live' || mode === 'original')) applyClipPreview(mode, player)
-  }, [active, mode, previewUrl, selectedTrack?.id])
-
-  function clipPlayerProps(kind: 'live' | 'original') {
-    return {
-      controls: true,
-      preload: 'metadata' as const,
-      src: previewUrl,
-      hidden: mode !== kind || !previewUrl,
-      onLoadedMetadata: (event: SyntheticEvent<HTMLAudioElement>) => applyClipPreview(kind, event.currentTarget),
-      onPlay: (event: SyntheticEvent<HTMLAudioElement>) => {
-        const player = event.currentTarget
-        if (!active || mode !== kind || !selectedTrack || (kind === 'live' && (!realtime.ready || realtime.error))) {
-          player.pause()
-        } else {
-          const { start, end } = orientedRange(selectedTrack, kind === 'original')
-          if (player.currentTime < start || player.currentTime >= end) player.currentTime = start
-        }
-      },
-      onTimeUpdate: (event: SyntheticEvent<HTMLAudioElement>) => {
-        if (scrubbing.current || mode !== kind || !selectedTrack || !previewUrl) return
-        const player = event.currentTarget
-        const { start, end } = orientedRange(selectedTrack, kind === 'original')
-        if (!player.paused && player.currentTime >= end) {
-          player.pause()
-          player.currentTime = end
-        }
-        setPosition(selectedTrack.offset + clamp(player.currentTime, start, end) - start)
-      },
-    }
+    const preview = clipForPreview(track, kind === 'original')
+    void startRealtimePlayback(kind, [preview], clipPlaybackPosition(preview))
   }
 
   const snapGuide = dropTarget?.guide ?? trimPreview?.range.guide
@@ -1198,8 +1143,10 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       <MediaLibrary items={library.map(asset => asset.media)} collapsed={libraryCollapsed}
         onImport={() => void importAssets()} importDisabled={!!busy || !workspaceReady}
         onToggle={() => setLibraryCollapsed(value => !value)}>
-        {!libraryCollapsed && <MissingMediaList paths={unavailable.paths} disabled={!!busy}
-          onRelink={(path, choose) => void relinkAsset(path, choose)}/>}
+        {!libraryCollapsed && <MissingMediaList entries={unavailable.assets} disabled={!!busy}
+          confirmDelete={settings.confirmDelete} language={settings.language}
+          onRelink={(entry, choose) => void relinkAsset(entry, choose)}
+          onRemove={removeUnavailableAsset}/>}
         {library.map(asset => <MediaLibraryItem key={asset.media.id} item={asset.media} selected={asset === selectedAsset}
           collapsed={libraryCollapsed} removalDisabled={!!busy}
           onSelect={() => selectAsset(asset)} onRemove={() => removeAsset(asset)}
@@ -1222,11 +1169,13 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
           <TimelineEditControls
             canUndo={!busy && past.length > 0}
             canRedo={!busy && future.length > 0}
+            canSplit={!!playheadClip}
             canDelete={!busy && !!selectedTrack && !selectedLocked}
             canAddMarker={!busy && !!selectedTrack && !selectedLocked && (selectedTrack.effects.pitchPoints?.length ?? 0) < 128}
             deleteLabel="移除片段"
             onUndo={() => restoreTimeline(undo)}
             onRedo={() => restoreTimeline(redo)}
+            onSplit={() => { if (playheadClip) splitTrack(playheadClip, position) }}
             onDelete={() => { if (selectedTrack) removeTrack(selectedTrack.id) }}
             onAddMarker={() => { if (selectedTrack) addMarker(selectedTrack) }}
           >
@@ -1247,13 +1196,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
                 setKeptRange(null)
                 setSelectRange(current => !current)
               }}>框选片段</button>
-            <button className="timeline-icon-btn mix-snap-toggle" type="button" title="吸附对齐" aria-label="吸附对齐"
-              aria-pressed={snap} onClick={() => setSnap(current => !current)}>
-              <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2"
-                strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 13a9 9 0 0 1 18 0v7h-5v-7a4 4 0 0 0-8 0v7H3v-7ZM3 16h5m8 0h5" />
-              </svg>
-            </button>
+            <TimelineSnapButton className="mix-snap-toggle" enabled={snap} onToggle={() => setSnap(current => !current)} />
           </div>
           <WaveformZoomControls
             factor={zoom}
@@ -1266,7 +1209,6 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
         </div>
       </header>
       {error && <p className="error-banner" role="alert">{error}</p>}
-      {realtime.error && <p className="settings-hint" role="status">{realtime.error}</p>}
       {selectRange && <p className="mix-range-status" id="mix-range-status">
         {rangeFeedback ? <>
           <strong>{trimPreview ? '将保留' : '已保留'}</strong>
@@ -1392,37 +1334,47 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
         </div>
       </div>}
       <div className="adjustment-compare mix-transport">
-        <button className="btn btn-ghost" type="button" aria-pressed={mixing}
+        <button className="btn btn-ghost mix-playback-button" type="button" aria-pressed={mixing}
+          aria-label="实时混音试听" title={mixing ? '暂停混音' : '实时混音试听'}
           disabled={!mixing && (!!busy || !audibleTracks.length)} onClick={toggleMix}>
-          {mixing ? '暂停混音' : '实时混音试听'}
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 6h9M3 12h7M3 18h9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            <path d={mixing ? 'M14 7h3v10h-3zM19 7h3v10h-3z' : 'M14 6v12l9-6z'} fill="currentColor" />
+          </svg>
         </button>
-        <button className="btn btn-ghost" type="button" aria-pressed={mode === 'live' || realtimeClip}
-          disabled={!!busy || !selectedTrack || !realtime.ready || !!realtime.error} onClick={() => void audition('live')}>实时试听</button>
-        <button className="btn btn-ghost" type="button" aria-pressed={mode === 'original'} disabled={!!busy || !selectedTrack} onClick={() => void audition('original')}>原音</button>
+        <button className="btn btn-ghost mix-playback-button" type="button" aria-pressed={playingClip}
+          aria-label="实时试听选中片段" title={playingClip ? '暂停片段试听' : '实时试听选中片段'}
+          disabled={!!busy || !selectedTrack} onClick={() => audition('realtime-clip')}>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d={playingClip ? 'M7 5h4v14H7zM13 5h4v14h-4z' : 'M7 4v16l13-8z'} fill="currentColor" />
+          </svg>
+        </button>
+        <button className="btn btn-ghost" type="button" aria-pressed={playingOriginal} aria-label="试听原音"
+          title={playingOriginal ? '暂停原音' : '试听原音'} disabled={!!busy || !selectedTrack}
+          onClick={() => audition('original')}>原音</button>
         <div className="adjustment-export-actions">
-          <AdjustmentOutputFields output={output} disabled={!!busy}/>
+          <PlaybackSpeedMenu rate={playbackRate} onChange={setPlaybackRate}/>
           <button className="btn btn-ghost" type="button" disabled={!!busy || !selectedTrack} onClick={() => void renderOutput(true)}>保存片段</button>
           <button className="btn btn-primary" type="button" disabled={!!busy || !audibleTracks.length} onClick={() => void renderOutput()}>保存混音</button>
         </div>
       </div>
       {busy === 'import' && <p role="status">正在导入素材…</p>}
       {busy === 'place' && <p role="status">正在生成音频波形…</p>}
-      {(busy === 'render' || busy === 'prepare') && <div className="mix-progress" role="status">
-        <span>{busy === 'prepare' ? '正在准备纯音频试听…' : '正在生成调整结果…'}</span><progress max="100" value={progress}/>
+      {busy === 'render' && <div className="mix-progress" role="status">
+        <span>正在生成调整结果…</span><progress max="100" value={progress}/>
         <button className="btn btn-ghost btn-small" type="button" onClick={() => { if (job.current) void window.vdro.cancelAdjustment(job.current) }}>取消处理</button>
       </div>}
       {savedPath && <p className="settings-hint" role="status">音频已保存 <span translate="no">{savedPath}</span></p>}
       {!busy && mode === 'mix' && result?.clip.sourceMediaId === '' && result.fingerprint !== fingerprint &&
         <p className="settings-hint">正在试听之前生成的结果</p>}
-      {realtimeMode && mixEndTime > 0 && <div className="mix-live-controls">
-        <time>{formatTime(Math.min(position, mixEndTime))} / {formatTime(mixEndTime)}</time>
-        <input className="mix-live-seek" type="range" min={0} max={mixEndTime} step="0.001" value={Math.min(position, mixEndTime)}
-          aria-label={realtimeClip ? '预览播放进度' : '混音播放进度'} onChange={event => seek(event.currentTarget.valueAsNumber)}/>
+      {realtimeMode && previewEnd > previewStart && <div className="mix-live-controls">
+        <time>{formatTime(previewPosition - previewStart)} / {formatTime(previewEnd - previewStart)}</time>
+        <input className="mix-live-seek" type="range" min={previewStart} max={previewEnd} step="0.001" value={previewPosition}
+          aria-label={previewingClip ? '预览播放进度' : '混音播放进度'}
+          onChange={event => seek(event.currentTarget.valueAsNumber, previewStart, previewEnd)}/>
         <label>试听音量 <input type="range" min={0} max={100} value={mixVolume}
           onChange={event => setMixVolume(event.currentTarget.valueAsNumber)}/></label>
       </div>}
-      <audio {...clipPlayerProps('live')} ref={liveAudio} crossOrigin="anonymous"/>
-      <audio {...clipPlayerProps('original')} ref={originalAudio}/>
       <audio ref={audio} controls hidden={mode !== 'mix' || !result} src={result?.clip.url} preload="auto"
         onError={() => { if (result) setError('试听文件不可用，请重新导入或生成。') }}
         onLoadedMetadata={event => {
@@ -1449,15 +1401,17 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       </nav>
       <div hidden={inspector !== 'parameters'}>
       {selectedTrack ? <TrackControls key={selectedTrack.id} track={selectedTrack} disabled={!!busy || selectedLocked}
-        marker={marker} setMarker={setMarker} onAddMarker={() => addMarker(selectedTrack)} settings={settings}
-        onRemove={() => removeTrack(selectedTrack.id)}
+        marker={marker} setMarker={setMarker} settings={settings}
         update={(change, group) => {
-          changeTrack(selectedTrack.id, change, group)
-          if (mode === 'original' && originalAudio.current && !originalAudio.current.paused) void audition('live')
+          const updated = changeTrack(selectedTrack.id, change, group)
+          if (updated && updated !== selectedTrack && playingOriginal) audition('realtime-clip', updated)
         }}/>
         : <p className="settings-hint">添加音轨后可编辑轨道参数。</p>}
       </div>
       <section className="adjustment-results" hidden={inspector !== 'results'}>
+        <div className="mix-result-output">
+          <AdjustmentOutputFields output={output} disabled={!!busy}/>
+        </div>
         {!results.length && <p className="settings-hint">生成结果后可试听、保存或删除。原文件不会被修改。</p>}
         {results.map(item => <article key={item.clip.id}>
           <div><strong translate="no">{item.clip.fileName}</strong><p>{formatTime(item.clip.duration)} · {item.clip.format.toUpperCase()}</p></div>
@@ -1470,19 +1424,51 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       </section>
     </aside>
     {active && clipMenu && menuTrack && <ClipContextMenu x={clipMenu.x} y={clipMenu.y}
-      locked={!!laneAppearance[menuTrack.lane]?.locked} reversed={!!menuTrack.reversed}
+      locked={!!laneAppearance[menuTrack.lane]?.locked} reversed={!!menuTrack.reversed} muted={!!menuTrack.muted}
       onDismiss={dismissClipMenu} onAction={action => runClipAction(action, menuTrack)} />}
   </main>
 }
 
-function TrackControls({ track, disabled, marker, setMarker, onAddMarker, settings, onRemove, update }: {
+function PlaybackSpeedMenu({ rate, onChange }: { rate: number; onChange: (rate: number) => void }) {
+  const menuId = useId()
+  return <>
+    <button className="btn btn-ghost mix-speed-button" type="button" popoverTarget={menuId} aria-haspopup="menu">
+      <span>播放速度</span><span>{rate}×</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <path d="m6 15 6-6 6 6"/>
+      </svg>
+    </button>
+    <div className="mix-clip-menu mix-speed-menu" id={menuId} popover="auto" role="menu" aria-label="播放速度"
+      onToggle={event => {
+        if (event.newState === 'open') event.currentTarget.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus()
+      }}
+      onKeyDown={event => {
+        if (event.key === 'Tab') { event.currentTarget.hidePopover(); return }
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        event.preventDefault()
+        const options = Array.from(event.currentTarget.querySelectorAll('button'))
+        const index = options.findIndex(option => option === document.activeElement)
+        const step = event.key === 'ArrowDown' ? 1 : -1
+        options[(index + step + options.length) % options.length]?.focus()
+      }}>
+      {PLAYBACK_RATES.map(option => <button key={option} type="button" role="menuitemradio" aria-checked={rate === option}
+        onClick={event => {
+          event.currentTarget.parentElement?.hidePopover()
+          onChange(option)
+        }}>
+        <span>{option}×</span>
+        {rate === option && <span aria-hidden="true">✓</span>}
+      </button>)}
+    </div>
+  </>
+}
+
+function TrackControls({ track, disabled, marker, setMarker, settings, update }: {
   track: Track
   disabled: boolean
   marker: string
   setMarker: (id: string) => void
-  onAddMarker: () => void
   settings: AppSettings
-  onRemove: () => void
   update: (callback: (track: Track) => Track, group?: object) => void
 }) {
   const controlEdit = useRef<{ field: HTMLInputElement; group: object } | null>(null)
@@ -1522,11 +1508,6 @@ function TrackControls({ track, disabled, marker, setMarker, onAddMarker, settin
       onPointerCancel={() => { controlEdit.current = null }}
       onLostPointerCapture={() => { controlEdit.current = null }}
       onBlur={event => { if (controlEdit.current?.field.isSameNode(event.target)) controlEdit.current = null }}>
-      <div className="mix-track-actions">
-        <button className="btn btn-ghost btn-small" type="button" aria-pressed={track.muted}
-          onClick={() => update(current => ({ ...current, muted: !current.muted }))}>静音</button>
-        <TimelineEditButton action="delete" label="移除片段" onClick={onRemove} />
-      </div>
       <TimeField label="混音起点（秒）" value={track.offset} max={MAX_MIX_OFFSET}
         onChange={(value, group) => update(current => ({ ...current, offset: Math.max(0, Math.min(value, MAX_MIX_OFFSET)) }), group)}/>
       <TimeField label="起点（秒）" value={track.start} max={track.end - MIN_CLIP_DURATION} onChange={(value, group) => setRange('start', value, group)}/>
@@ -1545,7 +1526,7 @@ function TrackControls({ track, disabled, marker, setMarker, onAddMarker, settin
         if (points.some(item => item.id !== point.id && Math.abs(item.time - time) < .01 - .000001)) return
         adjust({ pitchPoints: sortedPitchPoints(points.map(item => item.id === point.id ? { ...item, time } : item)) }, group)
       }}/>}
-      <div className="pitch-point-list">
+      {points.length > 0 && <div className="pitch-point-list">
         {points.map((item, index) => <div key={item.id}>
           <button type="button" aria-pressed={item.id === point?.id} onClick={() => setMarker(item.id)}>标记 {index + 1} · {seconds(item.time)} · {item.semitones}</button>
           <button type="button" aria-label={`删除标记 ${index + 1}`} onClick={() => {
@@ -1553,10 +1534,9 @@ function TrackControls({ track, disabled, marker, setMarker, onAddMarker, settin
             if (item.id === marker) setMarker('')
           }}>×</button>
         </div>)}
-        <TimelineEditButton action="marker" disabled={points.length >= 128} onClick={onAddMarker} />
-        {points.length > 0 && <button className="btn btn-ghost btn-small" type="button"
-          onClick={() => { adjust({ pitchPoints: [] }); setMarker('') }}>清除全部标记</button>}
-      </div>
+        <button className="btn btn-ghost btn-small" type="button"
+          onClick={() => { adjust({ pitchPoints: [] }); setMarker('') }}>清除全部标记</button>
+      </div>}
       <div>
         <label><input type="checkbox" checked={effects.preserveFormants} aria-describedby="mix-formant-description"
           onChange={event => adjust({ preserveFormants: event.target.checked })}/>保持人声共振峰</label>
@@ -1761,7 +1741,7 @@ function TrackWave({ track, view, selected, marker, editable, selectRange, movab
         }}/>
     })}
     {visibleMarkers.map(({ point, index }) =>
-      <button key={point.id} className="mix-marker-pin" type="button"
+      <button key={point.id} className="mix-marker-pin timeline-marker-pin" type="button"
         aria-label={'选择标记 ' + (index + 1)} aria-pressed={selected && (marker || markers[0]?.id) === point.id}
         disabled={splitMode}
         title={`标记 ${index + 1}：${point.time.toFixed(2)} 秒，${point.semitones} 半音`}

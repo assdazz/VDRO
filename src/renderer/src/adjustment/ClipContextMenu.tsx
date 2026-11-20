@@ -1,20 +1,23 @@
 import { useLayoutEffect, useRef } from 'react'
 import { TimelineEditIcon } from '../TimelineEditControls'
+import { VolumeIcon } from '../VolumeIcon'
 
 const items = [
   { action: 'copy', label: '复制', shortcut: 'Ctrl+C' },
   { action: 'cut', label: '剪切', shortcut: 'Ctrl+X' },
   { action: 'reverse', label: '倒放', shortcut: '' },
+  { action: 'mute', label: '静音片段', shortcut: '' },
   { action: 'delete', label: '删除', shortcut: 'Delete' },
 ] as const
 
 export type ClipMenuAction = (typeof items)[number]['action']
 
-export function ClipContextMenu({ x, y, locked, reversed, onAction, onDismiss }: {
+export function ClipContextMenu({ x, y, locked, reversed, muted, onAction, onDismiss }: {
   x: number
   y: number
   locked: boolean
   reversed: boolean
+  muted: boolean
   onAction: (action: ClipMenuAction) => void
   onDismiss: () => void
 }) {
@@ -51,12 +54,15 @@ export function ClipContextMenu({ x, y, locked, reversed, onAction, onDismiss }:
       const index = buttons.indexOf(document.activeElement as HTMLButtonElement)
       buttons[(index + (event.key === 'ArrowUp' ? buttons.length - 1 : 1)) % buttons.length]?.focus()
     }}>
-    {items.map(({ action, label, shortcut }) => <button key={action} type="button" data-action={action}
-      role={action === 'reverse' ? 'menuitemcheckbox' : 'menuitem'} aria-checked={action === 'reverse' ? reversed : undefined}
-      disabled={locked && action !== 'copy'} aria-keyshortcuts={shortcut || undefined} onClick={() => onAction(action)}>
-      <TimelineEditIcon action={action} />
-      <span>{label}</span>
-      {shortcut && <kbd translate="no">{shortcut}</kbd>}
-    </button>)}
+    {items.map(({ action, label, shortcut }) => {
+      const checked = action === 'reverse' ? reversed : action === 'mute' ? muted : undefined
+      return <button key={action} type="button" data-action={action}
+        role={checked === undefined ? 'menuitem' : 'menuitemcheckbox'} aria-checked={checked}
+        disabled={locked && action !== 'copy'} aria-keyshortcuts={shortcut || undefined} onClick={() => onAction(action)}>
+        {action === 'mute' ? <VolumeIcon muted={muted} /> : <TimelineEditIcon action={action} />}
+        <span>{label}</span>
+        {shortcut && <kbd translate="no">{shortcut}</kbd>}
+      </button>
+    })}
   </div>
 }

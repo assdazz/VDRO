@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AppSettings, ImportedMedia } from '@shared/types'
-import { IconFileAudio, IconFileVideo, IconLibrary, IconPlus } from './MediaLibrary'
+import { IconFileAudio, IconFileVideo, IconLibrary, IconPlus, IconTrash } from './MediaLibrary'
 import { SHORTCUT_LABELS, shortcutLabel } from './shortcutLabels'
+import { translateUiText } from './i18n'
 import { readDraft } from './projectDraft'
 import './home.css'
 
 const WORKSPACES = { clip: '音频剪辑', adjust: '音频调整' } as const
 type Workspace = keyof typeof WORKSPACES
 type Project = { id: string; name: string; workspace: Workspace; openedAt: number }
-type Activity = { id: string; kind: 'created' | 'opened'; name: string; time: number }
+type Activity = { id: string; projectId?: string; kind: 'created' | 'opened'; name: string; time: number }
 type HomeData = { projects: Project[]; activity: Activity[] }
 const HOME_STORAGE_KEY = 'vdro.home-projects.v1'
 const validTime = (time: number) => Number.isFinite(time) && Math.abs(time) <= 8.64e15
@@ -30,7 +31,7 @@ function readHomeData(): HomeData {
 }
 
 export function HomePage({ active, appearance, settings, settingsLoaded, library, onNavigate, onSettings,
-  onMediaDirectory, onOpenMedia, settingsIcon }: {
+  onMediaDirectory, onOpenMedia, onDeleteProject, settingsIcon }: {
   active: boolean
   appearance: string
   settings: AppSettings
@@ -38,6 +39,7 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
   library: ImportedMedia[]
   onNavigate: (next: Workspace, projectId: string, name: string) => void
   onSettings: () => void
+  onDeleteProject: (id: string) => Promise<void>
   onMediaDirectory: (path: string) => void
   onOpenMedia: (media: ImportedMedia) => void
   settingsIcon: ReactNode
@@ -47,8 +49,8 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
     if (!active) return
     setDrafts((['clip', 'adjust'] as const).filter(workspace => {
       try {
-        const draft = readDraft<{ paths: string[]; tracks?: unknown[] }>('__draft__', workspace)
-        return Boolean(draft?.paths.length || draft?.tracks?.length)
+        const draft = readDraft<{ assets?: unknown[]; paths?: string[]; tracks?: unknown[] }>('__draft__', workspace)
+        return Boolean(draft?.assets?.length || draft?.paths?.length || draft?.tracks?.length)
       } catch { return false }
     }))
   }, [active])
@@ -84,7 +86,7 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
     const time = Date.now()
     const next = {
       projects: [{ ...project, openedAt: time }, ...data.projects.filter(item => item.id !== project.id)],
-      activity: [{ id: crypto.randomUUID(), kind, name: project.name, time }, ...data.activity].slice(0, 30),
+      activity: [{ id: crypto.randomUUID(), projectId: project.id, kind, name: project.name, time }, ...data.activity].slice(0, 30),
     }
     try {
       localStorage.setItem(HOME_STORAGE_KEY, JSON.stringify(next))
@@ -93,6 +95,35 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
       onNavigate(project.workspace, project.id, project.name)
     } catch {
       setError('无法保存项目，请重试。')
+    }
+  }
+
+  async function deleteProject(project: Project) {
+    if (busy) return
+    if (!window.dispatchEvent(new Event('vdro:before-project-change', { cancelable: true }))) {
+      setError('请在当前音频任务完成后删除项目。')
+      return
+    }
+    const message = translateUiText('确定删除此项目及其编辑记录吗？源素材和已另存的文件会保留。', settings.language)
+    if (!window.confirm(project.name + '\n\n' + message)) return
+    setBusy(true)
+    setError('')
+    try {
+      await onDeleteProject(project.id)
+      const uniqueName = data.projects.filter(item => item.name === project.name).length === 1
+      const next = {
+        projects: data.projects.filter(item => item.id !== project.id),
+        activity: data.activity.filter(item => item.projectId
+          ? item.projectId !== project.id
+          : !uniqueName || item.name !== project.name),
+      }
+      localStorage.setItem(HOME_STORAGE_KEY, JSON.stringify(next))
+      setData(next)
+      projectsHeading.current?.focus()
+    } catch {
+      setError('无法删除项目，请重试。')
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -136,13 +167,13 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
     <main className="home-workspace" aria-label="工作页面">
       <aside className="home-sidebar">
         <nav className="home-nav" aria-label="首页导航">
-          <button className="home-nav-new" type="button" onClick={() => showPanel('create')}>
+          <button className="home-nav-new" type="button" disabled={busy} onClick={() => showPanel('create')}>
             <IconPlus />新建项目
           </button>
           <button type="button" aria-current="page" onClick={() => { setError(''); projectsHeading.current?.focus() }}>
             <IconLibrary />我的项目
           </button>
-          <button className="home-nav-library" type="button" onClick={() => showPanel('library')}>
+          <button className="home-nav-library" type="button" disabled={busy} onClick={() => showPanel('library')}>
             <IconFileAudio />素材库
           </button>
           <button className="home-nav-settings" type="button" onClick={onSettings}>
@@ -154,7 +185,7 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
       <section className="home-projects" aria-labelledby="home-projects-heading">
         <h1 id="home-projects-heading" ref={projectsHeading} tabIndex={-1}>我的项目</h1>
         {error && !panel && <p className="home-error" role="alert">{error}</p>}
-        {drafts.map(workspace => <button key={workspace} type="button" className="btn btn-secondary resume-draft"
+        {drafts.map(workspace => <button key={workspace} type="button" className="btn btn-secondary resume-draft" disabled={busy}
           onClick={() => {
             if (window.dispatchEvent(new Event('vdro:before-project-change', { cancelable: true }))) onNavigate(workspace, '__draft__', '')
             else setError('请在当前音频任务完成后切换项目。')
@@ -165,13 +196,16 @@ export function HomePage({ active, appearance, settings, settingsLoaded, library
           <span>点击“新建项目”开始。</span>
         </div> : <ul className="home-project-list">
           {data.projects.map(project => <li key={project.id}>
-            <button type="button" className="home-project" data-workspace={project.workspace}
+            <button type="button" className="home-project" data-workspace={project.workspace} disabled={busy}
               onClick={() => enterProject(project, 'opened')}>
               <span className="home-project-symbol"><IconFileAudio /></span>
-              <span className="home-project-name" translate="no" title={project.name}>{project.name}</span>
+              <span className="home-project-name" id={'project-name-' + project.id} translate="no" title={project.name}>{project.name}</span>
               <span className="home-project-kind">{WORKSPACES[project.workspace]}</span>
               {projectTime(project.openedAt)}
             </button>
+            <button className="home-project-delete timeline-icon-btn" type="button" title="删除项目" aria-label="删除项目"
+              aria-describedby={'project-name-' + project.id} disabled={busy}
+              onClick={() => void deleteProject(project)}><IconTrash /></button>
           </li>)}
         </ul>}
       </section>

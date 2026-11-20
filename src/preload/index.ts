@@ -48,6 +48,7 @@ const api: VdroApi = {
     }>,
   saveLibrary: (entries: StoredLibraryEntry[]) =>
     ipcRenderer.invoke('library:save', entries) as Promise<void>,
+  deleteProject: projectId => ipcRenderer.invoke('project:delete', projectId) as Promise<void>,
   loadExtracted: projectId => ipcRenderer.invoke('extracted:load', projectId) as Promise<ExtractedClip[]>,
   saveExtractedClips: (clips: ExtractedClip[], projectId?: string) =>
     ipcRenderer.invoke('extracted:save', clips, projectId) as Promise<void>,
@@ -68,6 +69,7 @@ const api: VdroApi = {
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   onOpenMedia: (callback: (media: ImportedMedia) => void) =>
     subscribe('app:open-media', callback),
+  readPreviewBlock: (id, stream, first, frames) => ipcRenderer.invoke('media:preview-block', id, stream, first, frames),
   getPeaks: (mediaId: string, audioStreamIndex: number) =>
     ipcRenderer.invoke('media:peaks', mediaId, audioStreamIndex) as Promise<PeaksResult>,
   extractAudio: (request: ExportRequest) =>

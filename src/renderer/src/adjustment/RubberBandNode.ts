@@ -6,7 +6,7 @@ const worklets = new WeakMap<AudioContext, Promise<void>>()
 export class RubberBandNode extends AudioWorkletNode {
   latencySeconds = .15
   metrics = { underruns: 0, buffered: 0, blocks: 0 }
-  static async create(context: AudioContext) {
+  static async prepare(context: AudioContext) {
     modulePromise ??= fetch(wasmUrl).then(response => {
       if (!response.ok) throw new Error('无法读取本地 Rubber Band 组件')
       return response.arrayBuffer()
@@ -17,6 +17,10 @@ export class RubberBandNode extends AudioWorkletNode {
       worklets.set(context, worklet)
     }
     const [module] = await Promise.all([modulePromise, worklet])
+    return module
+  }
+  static async create(context: AudioContext) {
+    const module = await this.prepare(context)
     const node = new RubberBandNode(context, 'vdro-rubberband', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], processorOptions: { module } })
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => { node.dispose(); reject(new Error('Rubber Band 初始化超时')) }, 10000)

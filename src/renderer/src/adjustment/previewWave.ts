@@ -1,3 +1,5 @@
+import { MAX_PREVIEW_BLOCK_FRAMES, previewSampleRate } from '@shared/previewAudio'
+import type { ImportedMedia } from '@shared/types'
 const HEADER_BYTES = 16 * 1024
 const FRAMES_PER_BLOCK = 48_000
 
@@ -64,3 +66,48 @@ export async function openPreviewWave(url: string) {
 }
 
 export type PreviewWave = NonNullable<Awaited<ReturnType<typeof openPreviewWave>>>
+
+/** A seekable PCM view. Compressed media is decoded around the playhead in bounded blocks. */
+export function timelineWave(media: ImportedMedia, index: number): PreviewWave {
+  const stream = media.info.audioStreams.find(item => item.index === index)!
+  const sampleRate = previewSampleRate(stream)
+  const frames = Math.round(media.info.duration * sampleRate)
+  const channels = stream.channels === 1 ? 1 : 2
+  const direct = stream.codec === 'pcm_s16le' && stream.sampleRate === sampleRate && media.info.audioStreams.length === 1
+  let directWave: ReturnType<typeof openPreviewWave> | undefined
+  const blockSize = direct ? FRAMES_PER_BLOCK : Math.min(MAX_PREVIEW_BLOCK_FRAMES, sampleRate * 2)
+  const cache = new Map<number, Promise<AudioBuffer>>()
+  async function decode(context: AudioContext, first: number, reversed: boolean) {
+    const pcm = direct ? await (directWave ??= openPreviewWave(media.url).catch(() => null)) : null
+    if (pcm?.frames === frames && pcm.sampleRate === sampleRate) return pcm.readBlock(context, first, reversed)
+    const count = Math.min(blockSize, frames - first)
+    const start = reversed ? frames - first - count : first
+    const bytes = await window.vdro.readPreviewBlock(media.id, index, start, count)
+    const data = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    const buffer = context.createBuffer(channels, count, sampleRate)
+    // Container duration can extend past the audio stream. Leave its tail silent.
+    const available = Math.min(count, Math.floor(bytes.byteLength / (channels * 2)))
+    for (let channel = 0; channel < channels; channel++) {
+      const output = buffer.getChannelData(channel)
+      for (let i = 0; i < available; i++) {
+        output[reversed ? count - 1 - i : i] = data.getInt16((i * channels + channel) * 2, true) / 32768
+      }
+    }
+    return buffer
+  }
+  return {
+    sampleRate, frames, blockStart: frame => Math.floor(frame / blockSize) * blockSize,
+    readBlock(context, first, reversed = false) {
+      const key = reversed ? -first - 1 : first
+      const existing = cache.get(key)
+      if (existing) return existing
+      const pending = decode(context, first, reversed).catch(cause => {
+        if (cache.get(key) === pending) cache.delete(key)
+        throw cause
+      })
+      cache.set(key, pending)
+      if (cache.size > 3) cache.delete(cache.keys().next().value!)
+      return pending
+    },
+  }
+}

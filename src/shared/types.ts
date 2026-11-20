@@ -27,6 +27,7 @@ export interface MediaInfo {
 
 export interface ImportedMedia {
   id: string
+  projectMediaId?: string
   url: string
   info: MediaInfo
   fileName: string
@@ -74,6 +75,7 @@ export interface ExtractedClip {
   size: number
   format: ExportFormat
   sourceMediaId: string
+  sourceProjectMediaId?: string
   sourceName: string
   projectId?: string
   sourceFilePath?: string
@@ -198,6 +200,7 @@ export interface VdroApi {
   chooseDirectory: (defaultPath?: string, purpose?: 'save' | 'media') => Promise<string | null>
   loadLibrary: () => Promise<{ media: ImportedMedia[]; missing: string[] }>
   saveLibrary: (entries: StoredLibraryEntry[]) => Promise<void>
+  deleteProject: (projectId: string) => Promise<void>
   loadExtracted: (projectId?: string) => Promise<ExtractedClip[]>
   saveExtractedClips: (clips: ExtractedClip[], projectId?: string) => Promise<void>
   clearTempFiles: () => Promise<void>
@@ -211,6 +214,7 @@ export interface VdroApi {
   importPath: (filePath: string, projectId?: string) => Promise<ImportedMedia>
   getPathForFile: (file: File) => string
   onOpenMedia: (callback: (media: ImportedMedia) => void) => () => void
+  readPreviewBlock: (mediaId: string, stream: number, firstFrame: number, frames: number) => Promise<Uint8Array>
   getPeaks: (mediaId: string, audioStreamIndex: number) => Promise<PeaksResult>
   extractAudio: (request: ExportRequest) => Promise<ExtractedClip>
   saveExtracted: (filePath: string, fileName: string) => Promise<SaveExtractedResult>

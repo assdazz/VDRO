@@ -6,6 +6,10 @@ import {
   shell,
   type IpcMainInvokeEvent,
 } from 'electron'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { MAX_PREVIEW_BLOCK_FRAMES, previewSampleRate } from '../shared/previewAudio'
+import { ffmpegPath } from './media/binaries'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
@@ -190,8 +194,42 @@ function validateExport(request: ExportRequest, info: MediaInfo): void {
   }
 }
 
+const execPreview = promisify(execFile)
+let previewSlots = 4
+const previewWaiters: (() => void)[] = []
+
+async function decodePreviewBlock(args: string[]) {
+  if (previewSlots > 0) previewSlots--
+  else await new Promise<void>(resolve => previewWaiters.push(resolve))
+  try {
+    const { stdout } = await execPreview(ffmpegPath, args, {
+      windowsHide: true, encoding: 'buffer', maxBuffer: 1024 * 1024, timeout: 30000,
+    })
+    return new Uint8Array(stdout)
+  } finally {
+    const next = previewWaiters.shift()
+    if (next) next()
+    else previewSlots++
+  }
+}
+
 export function registerIpc(): void {
   registerAdjustmentIpc(getMediaEntry)
+  ipcMain.handle('media:preview-block', async (_event, id: string, index: number, first: number, frames: number) => {
+    const { info, filePath } = getMediaEntry(id)
+    const stream = info.audioStreams.find(item => item.index === index)
+    if (!stream) throw new Error('无法读取混音试听素材。')
+    const rate = previewSampleRate(stream)
+    if (!Number.isSafeInteger(first) || first < 0 || first >= Math.ceil(info.duration * rate) ||
+      !Number.isInteger(frames) || frames < 1 || frames > MAX_PREVIEW_BLOCK_FRAMES) throw new Error('无法读取混音试听素材。')
+    const channels = stream.channels === 1 ? 1 : 2
+    // Decode a short lead-in so codec history and resampling settle before each boundary.
+    const seekFrame = Math.max(0, first - rate)
+    const args = ['-v', 'error', '-nostdin', '-ss', String(seekFrame / rate), '-i', filePath,
+      '-ss', String((first - seekFrame) / rate),
+      '-map', '0:' + index, '-t', String(frames / rate), '-ac', String(channels), '-ar', String(rate), '-f', 's16le', 'pipe:1']
+    return decodePreviewBlock(args)
+  })
   ipcMain.handle('app:decoder-info', (event, mediaUrl: unknown) =>
     getDecoderInfo(event.sender.id, typeof mediaUrl === 'string' ? mediaUrl : undefined))
   ipcMain.handle('app:restart', async (_event, settings: unknown) => {
@@ -485,7 +523,7 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle('app:info', async () => ({
-    version: app.getVersion(),
+    version: app.getVersion().replace(/\+\d+$/, '+'),
     userDataPath: app.getPath('userData'),
   }))
 
@@ -566,6 +604,29 @@ export function registerIpc(): void {
     await updateExtracted(async () => {
       const others = (await loadStoredExtracted()).filter(clip => clip.projectId !== projectId)
       await saveStoredExtracted([...others, ...clips.map(clip => ({ ...clip, projectId }))])
+    })
+  })
+
+  ipcMain.handle('project:delete', (_event, projectId: unknown) => {
+    if (typeof projectId !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(projectId)) {
+      throw new Error('项目编号无效')
+    }
+    return updateExtracted(async () => {
+      const stored = await loadStoredExtracted()
+      const belongsToProject = (clip: ExtractedClip) => clip.projectId === projectId || clip.projectId === projectId + ':adjust'
+      const kept = stored.filter(clip => !belongsToProject(clip))
+      const retainedPaths = new Set(kept.map(clip => path.resolve(clip.filePath).toLowerCase()))
+      await saveStoredExtracted(kept)
+      for (const clip of stored.filter(belongsToProject)) {
+        unregisterMediaFile(clip.id)
+        if (!retainedPaths.has(path.resolve(clip.filePath).toLowerCase())) {
+          await fs.rm(clip.filePath, { force: true }).catch(() => undefined)
+        }
+      }
+      // Project media copies are scoped to this validated ID under the app data directory.
+      await fs.rm(path.join(app.getPath('userData'), 'project-assets', projectId), {
+        recursive: true, force: true,
+      }).catch(() => undefined)
     })
   })
 

@@ -67,7 +67,14 @@
   gap: 12px;
   margin-top: 18px;
 }
-.home-project-list li { min-width: 0; }
+.home-project-list li { min-width: 0; position: relative; }
+.home-project-list .home-project-delete {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+}
+.home-project-delete:hover:not(:disabled) { color: var(--vd-danger); }
+.home-project time { padding-right: 30px; }
 .home-project {
   display: grid;
   gap: 6px;

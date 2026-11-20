@@ -1,6 +1,6 @@
 {
   "name": "vdro",
-  "version": "1.3.2",
+  "version": "1.3.2+1",
   "private": true,
   "description": "VDRO — local audio segment extractor for audio and video files",
   "main": "./out/main/index.js",

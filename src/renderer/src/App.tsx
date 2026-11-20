@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { DEFAULT_APP_SETTINGS } from '@shared/defaults'
 import type { AppSettings, ExtractedClip, ImportedMedia } from '@shared/types'
 import { TITLE_BAR_HEIGHT } from '@shared/windowChrome'
@@ -7,7 +8,7 @@ import ClipEditor, { IconSettings } from './ClipEditor'
 import { HomePage } from './HomePage'
 import { formatTime, summary } from './MediaLibrary'
 import { translateDom } from './i18n'
-import type { ProjectSaveState } from './projectDraft'
+import { deleteProjectDrafts, type ProjectSaveState } from './projectDraft'
 import { PageTabs, type AppPage } from './PageTabs'
 import { useStartupBrand } from './useStartupBrand'
 
@@ -101,6 +102,28 @@ export default function App() {
     setPage(next)
   }, [])
 
+  async function deleteProject(id: string) {
+    if (id === projectId) {
+      // Unmount the old editors before deleting their drafts and persisted results.
+      flushSync(() => {
+        setProjectId('__draft__')
+        setProjectName(null)
+        setIncoming(null)
+        setRequestedMedia(null)
+        requestSettings(0)
+        navigate('home')
+      })
+    }
+    await window.vdro.deleteProject(id)
+    deleteProjectDrafts(id)
+    setProjectStates(previous => {
+      const next = { ...previous }
+      delete next[id + '.clip']
+      delete next[id + '.adjust']
+      return next
+    })
+  }
+
   function openHomeMedia(media: ImportedMedia) {
     setRequestedMedia({ media })
     navigate('clip')
@@ -147,7 +170,7 @@ export default function App() {
               requestSettings(0)
             }
             navigate(workspace)
-          }} onSettings={openSettings} onOpenMedia={openHomeMedia}
+          }} onDeleteProject={deleteProject} onSettings={openSettings} onOpenMedia={openHomeMedia}
           onMediaDirectory={mediaDirectory => setSettings(current => ({ ...current, mediaDirectory }))}
           settingsIcon={<IconSettings />} />
       </div>

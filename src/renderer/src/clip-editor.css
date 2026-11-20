@@ -127,20 +127,15 @@
 .clip-app [data-timeline-tool="split"] .waveform ::part(region),
 .clip-app [data-timeline-tool="split"] .waveform ::part(region-handle) { pointer-events: none !important; }
 .clip-marker-pin {
-  --clip-marker-size: calc(var(--vd-font-scale, 1) * 19px);
+  --clip-marker-size: calc(var(--vd-font-scale, 1) * 21px);
   position: absolute;
   inset-block-start: 20px;
-  z-index: 8;
+  z-index: 10;
   left: clamp(calc(var(--clip-marker-size) / 2), var(--clip-marker-position), calc(100% - var(--clip-marker-size) / 2));
   transform: translateX(-50%);
   min-width: var(--clip-marker-size);
-  height: var(--clip-marker-size);
+  min-height: calc(var(--vd-font-scale, 1) * 16px);
   padding: 0 2px;
-  color: var(--vd-bg);
-  background: var(--vd-timeline-line);
-  border: 1px solid var(--vd-bg);
-  border-radius: 3px;
-  font: 600 calc(var(--vd-font-scale, 1) * 10px) var(--vd-font-mono);
 }
 .clip-app [data-timeline-tool="split"] .clip-marker-pin { pointer-events: none; }
 .clip-app .timeline-editor .timeline-transport {
@@ -216,3 +211,13 @@
   .clip-app .jobbar { grid-column: 1; grid-row: 4; }
   .clip-app .timeline-ruler span:nth-child(even) { display: none; }
 }
+
+/* Keep trim edges reachable when they align with the playhead. */
+.clip-app .waveform ::part(regions-container) { z-index: 9; }
+.clip-app .waveform ::part(region) { pointer-events: none; }
+.clip-app .waveform ::part(region-handle) {
+  pointer-events: auto;
+  top: var(--vd-playhead-head-height);
+  height: calc(100% - var(--vd-playhead-head-height));
+}
+.clip-app [data-range-selected="false"] .waveform ::part(region-handle) { pointer-events: none !important; }
