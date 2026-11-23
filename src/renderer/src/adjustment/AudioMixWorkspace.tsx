@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type DragEvent, type MouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { MAX_MIX_OFFSET, MAX_MIX_CLIPS } from '@shared/types'
-import type { AppSettings, AudioAdjustment, ExtractedClip, ImportedMedia, MixTrackRequest, PeaksResult } from '@shared/types'
+import type { AppSettings, AudioAdjustment, ExtractedClip, ImportedMedia, Language, MixTrackRequest, PeaksResult } from '@shared/types'
 import { fadeBounds, fadeLevel } from '@shared/fades'
 import { pitchAt, sortedPitchPoints } from '@shared/pitch'
 import { translateUiText } from '../i18n'
@@ -8,6 +8,8 @@ import { formatTime, MediaLibrary, MediaLibraryItem } from '../MediaLibrary'
 import { WaveformZoomControls } from '../WaveformZoomControls'
 import { TimelineToolPicker, useTimelineToolShortcuts, type TimelineTool } from '../TimelineToolPicker'
 import { TimelineEditButton, TimelineEditControls } from '../TimelineEditControls'
+import { TimelineMarkerActions, TimelineMarkerPin, type MarkerMenuAnchor } from '../TimelineMarker'
+import { labelMarkers, markerName, updateMarkerLabel, type MarkerLabelEdit, type MarkerLabels } from '../timelineMarkers'
 import { TimelineSnapButton } from '../TimelineSnapButton'
 import { snapTimelineTime } from '../timelineSnap'
 import { TimelinePlayheadHandle, type PlayheadDrag } from '../TimelinePlayheadHandle'
@@ -31,6 +33,7 @@ type Track = MixTrackRequest & LibraryAsset & {
   lane: number
   waveform: PeaksResult
   muted: boolean
+  markerLabels?: MarkerLabels
 }
 type MixTimeline = { tracks: Track[]; laneAppearance: Record<number, TrackAppearance> }
 type ProjectTrack = Omit<Track, 'media' | 'mediaId' | 'waveform'> & { assetId: string }
@@ -119,6 +122,10 @@ function renderTrackKey(track: Track) {
     effects: track.effects, reversed: track.reversed }
 }
 
+function trackMarkerLabels(track: Track) {
+  return labelMarkers(sortedPitchPoints(track.effects.pitchPoints).map(point => point.id), track.markerLabels)
+}
+
 export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   projectId?: string
   settings: AppSettings
@@ -133,6 +140,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   const [selected, setSelected] = useState('')
   const [clipboard, setClipboard] = useState<Track | null>(null)
   const [clipMenu, setClipMenu] = useState<{ id: string; x: number; y: number } | null>(null)
+  const [markerMenu, setMarkerMenu] = useState<{ clipId: string; pointId: string; anchor: MarkerMenuAnchor } | null>(null)
   const [selectedMedia, setSelectedMedia] = useState('')
   const [dropTarget, setDropTarget] = useState<(DropPlacement & { lane: number; pointerX: number }) | null>(null)
   const dragSource = useRef<DragSource | null>(null)
@@ -181,7 +189,8 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     }
   }, [])
   const dismissClipMenu = useCallback(() => setClipMenu(null), [])
-  useTimelineToolShortcuts(active, settings.shortcuts, changeTimelineTool)
+  const dismissMarkerMenu = useCallback(() => setMarkerMenu(null), [])
+  useTimelineToolShortcuts(active && !markerMenu, settings.shortcuts, changeTimelineTool)
   const selectedTrack = tracks.find(track => track.id === selected)
   const sourceBitrate = selectedTrack?.media.info.audioStreams.find(stream => stream.index === selectedTrack.audioStreamIndex)?.bitRate
   const output = useAdjustmentOutput(settings, sourceBitrate)
@@ -341,8 +350,12 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   useEffect(() => {
     if (!active || mode !== 'mix') audio.current?.pause()
     if (!active || !realtimeMode) mix.current?.pause()
-    if (!active) { playOnLoad.current = null; dismissClipMenu() }
-  }, [active, mode, realtimeMode, dismissClipMenu])
+    if (!active) {
+      playOnLoad.current = null
+      dismissClipMenu()
+      dismissMarkerMenu()
+    }
+  }, [active, mode, realtimeMode, dismissClipMenu, dismissMarkerMenu])
 
   useEffect(() => {
     const player = new RealtimeMix(setPosition, setMixPlaying, cause => setError(errorText(cause)))
@@ -549,10 +562,27 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     if (existing) { setMarker(existing.id); return }
     if (points.length >= 128) return
     const point = { id: crypto.randomUUID(), time, semitones: pitchAt(points, time, effects.semitones) }
-    changeTrack(track.id, current => ({ ...current,
+    const updated = changeTrack(track.id, current => ({ ...current,
       effects: { ...current.effects, pitchPoints: sortedPitchPoints([...points, point]) },
     }))
-    setMarker(point.id)
+    if (updated) setMarker(point.id)
+  }
+
+  function deletePitchMarker(track: Track, id: string) {
+    const updated = changeTrack(track.id, current => ({ ...current,
+      effects: { ...current.effects, pitchPoints: current.effects.pitchPoints?.filter(point => point.id !== id) },
+    }))
+    if (!updated || updated === track || track.id !== selected) return
+    if (marker === id) setMarker('')
+    if (playingOriginal) audition('realtime-clip', updated)
+  }
+
+  function editPitchMarker(track: Track, id: string, edit: MarkerLabelEdit) {
+    if (working.current || laneAppearance[track.lane]?.locked || !track.effects.pitchPoints?.some(point => point.id === id)) return
+    const labels = trackMarkerLabels(track)
+    const next = updateMarkerLabel(labels, id, edit)
+    if (next === labels) return
+    editTimeline({ ...mixTimeline, tracks: tracks.map(item => item.id === track.id ? { ...item, markerLabels: next } : item) })
   }
 
   function selectAsset(asset: LibraryAsset) {
@@ -648,9 +678,13 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     audio.current?.pause()
     setError('')
     setSavedPath('')
-    const updated = tracks.map(item => item.id === id ? next : item)
+    const edited = next.effects.pitchPoints === track.effects.pitchPoints ? next : {
+      ...next,
+      markerLabels: labelMarkers((next.effects.pitchPoints ?? []).map(point => point.id), trackMarkerLabels(track)),
+    }
+    const updated = tracks.map(item => item.id === id ? edited : item)
     editTimeline({ tracks: updated, laneAppearance: appearanceAfterEdit(updated, track.lane) }, group)
-    return next
+    return edited
   }
 
   function appearanceAfterEdit(updated: Track[], lane: number) {
@@ -727,8 +761,10 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
   }
 
   const menuTrack = clipMenu && tracks.find(track => track.id === clipMenu.id)
+  const markerMenuTrack = markerMenu && tracks.find(track => track.id === markerMenu.clipId)
+  const menuMarker = markerMenuTrack && trackMarkerLabels(markerMenuTrack).byId[markerMenu.pointId]
   useEffect(() => {
-    if (!active) return
+    if (!active || markerMenu) return
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.isComposing || event.altKey || event.metaKey || event.shiftKey ||
         (event.target instanceof Element && event.target.closest('input,textarea,select,[contenteditable]')) ||
@@ -767,7 +803,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     else if (marker && !target?.effects.pitchPoints?.some(point => point.id === marker)) setMarker('')
   }
 
-  useTimelineHistoryShortcuts(active && !busy, () => restoreTimeline(undo), () => restoreTimeline(redo))
+  useTimelineHistoryShortcuts(active && !busy && !markerMenu, () => restoreTimeline(undo), () => restoreTimeline(redo))
 
   function seekTimeline(event: MouseEvent<HTMLDivElement>) {
     if (event.detail === 0) return
@@ -1245,15 +1281,20 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
                 }}>
                 {row.filter(track => track.id === dragging?.clipId ||
                   (mixEnd(track) > view.start && track.offset < view.start + view.length)).map(track =>
-                  <TrackWave key={track.id} track={track} view={view} selected={track === selectedTrack} marker={marker}
+                  <TrackWave key={track.id} track={track} view={view} selected={track === selectedTrack} marker={marker} language={settings.language}
                     editable={!appearance.locked && !busy} selectRange={selectRange}
                     movable={timelineTool === 'select' && !selectRange && !appearance.locked && !busy}
                     splitMode={timelineTool === 'split'}
                     playhead={position} onSplit={time => splitTrack(track, time)} onClick={() => selectTrack(track)}
                     onMarker={id => { selectTrack(track); setMarker(id) }}
+                    onMarkerMenu={(pointId, anchor) => {
+                      dismissClipMenu()
+                      setMarkerMenu({ clipId: track.id, pointId, anchor })
+                    }}
                     onContextMenu={event => {
                       event.preventDefault()
                       if (working.current) return
+                      dismissMarkerMenu()
                       selectTrack(track)
                       const bounds = event.currentTarget.getBoundingClientRect()
                       setClipMenu({ id: track.id, x: event.clientX || bounds.left, y: event.clientY || bounds.top })
@@ -1401,7 +1442,7 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
       </nav>
       <div hidden={inspector !== 'parameters'}>
       {selectedTrack ? <TrackControls key={selectedTrack.id} track={selectedTrack} disabled={!!busy || selectedLocked}
-        marker={marker} setMarker={setMarker} settings={settings}
+        marker={marker} setMarker={setMarker} settings={settings} onDeleteMarker={id => deletePitchMarker(selectedTrack, id)}
         update={(change, group) => {
           const updated = changeTrack(selectedTrack.id, change, group)
           if (updated && updated !== selectedTrack && playingOriginal) audition('realtime-clip', updated)
@@ -1426,6 +1467,11 @@ export function AudioMixWorkspace({ settings, active, incoming, projectId }: {
     {active && clipMenu && menuTrack && <ClipContextMenu x={clipMenu.x} y={clipMenu.y}
       locked={!!laneAppearance[menuTrack.lane]?.locked} reversed={!!menuTrack.reversed} muted={!!menuTrack.muted}
       onDismiss={dismissClipMenu} onAction={action => runClipAction(action, menuTrack)} />}
+    {active && markerMenu && markerMenuTrack && menuMarker &&
+      <TimelineMarkerActions key={markerMenu.clipId + ':' + markerMenu.pointId} anchor={markerMenu.anchor} label={menuMarker}
+        language={settings.language} disabled={!!busy || !!laneAppearance[markerMenuTrack.lane]?.locked} onDismiss={dismissMarkerMenu}
+        onDelete={() => deletePitchMarker(markerMenuTrack, markerMenu.pointId)}
+        onSave={edit => editPitchMarker(markerMenuTrack, markerMenu.pointId, edit)}/>}
   </main>
 }
 
@@ -1438,7 +1484,7 @@ function PlaybackSpeedMenu({ rate, onChange }: { rate: number; onChange: (rate: 
         <path d="m6 15 6-6 6 6"/>
       </svg>
     </button>
-    <div className="mix-clip-menu mix-speed-menu" id={menuId} popover="auto" role="menu" aria-label="播放速度"
+    <div className="timeline-context-menu mix-speed-menu" id={menuId} popover="auto" role="menu" aria-label="播放速度"
       onToggle={event => {
         if (event.newState === 'open') event.currentTarget.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus()
       }}
@@ -1463,12 +1509,13 @@ function PlaybackSpeedMenu({ rate, onChange }: { rate: number; onChange: (rate: 
   </>
 }
 
-function TrackControls({ track, disabled, marker, setMarker, settings, update }: {
+function TrackControls({ track, disabled, marker, setMarker, settings, onDeleteMarker, update }: {
   track: Track
   disabled: boolean
   marker: string
   setMarker: (id: string) => void
   settings: AppSettings
+  onDeleteMarker: (id: string) => void
   update: (callback: (track: Track) => Track, group?: object) => void
 }) {
   const controlEdit = useRef<{ field: HTMLInputElement; group: object } | null>(null)
@@ -1477,6 +1524,8 @@ function TrackControls({ track, disabled, marker, setMarker, settings, update }:
   const duration = +(track.end - track.start).toFixed(6)
   const fadeDuration = track.effects.fadeRange ? track.effects.fadeRange.end - track.effects.fadeRange.start : duration
   const points = sortedPitchPoints(effects.pitchPoints)
+  const labels = labelMarkers(points.map(point => point.id), track.markerLabels)
+  const inCreationOrder = [...points].sort((left, right) => labels.byId[left.id].number - labels.byId[right.id].number)
   const point = points.find(item => item.id === marker) ?? points[0]
   const pitch = point?.semitones ?? effects.semitones
   const adjust = (changes: Partial<AudioAdjustment>, group?: object) =>
@@ -1527,13 +1576,16 @@ function TrackControls({ track, disabled, marker, setMarker, settings, update }:
         adjust({ pitchPoints: sortedPitchPoints(points.map(item => item.id === point.id ? { ...item, time } : item)) }, group)
       }}/>}
       {points.length > 0 && <div className="pitch-point-list">
-        {points.map((item, index) => <div key={item.id}>
-          <button type="button" aria-pressed={item.id === point?.id} onClick={() => setMarker(item.id)}>标记 {index + 1} · {seconds(item.time)} · {item.semitones}</button>
-          <button type="button" aria-label={`删除标记 ${index + 1}`} onClick={() => {
-            adjust({ pitchPoints: points.filter(other => other.id !== item.id) })
-            if (item.id === marker) setMarker('')
-          }}>×</button>
-        </div>)}
+        {inCreationOrder.map(item => {
+          const name = markerName(labels.byId[item.id], settings.language)
+          return <div key={item.id}>
+            <button type="button" aria-pressed={item.id === point?.id} onClick={() => setMarker(item.id)}>
+              <span translate="no">{name}</span> · {seconds(item.time)} · {item.semitones}
+            </button>
+            <button type="button" translate="no" aria-label={translateUiText('删除标记', settings.language) + ' · ' + name}
+              onClick={() => onDeleteMarker(item.id)}>×</button>
+          </div>
+        })}
         <button className="btn btn-ghost btn-small" type="button"
           onClick={() => { adjust({ pitchPoints: [] }); setMarker('') }}>清除全部标记</button>
       </div>}
@@ -1575,12 +1627,13 @@ function TrackControls({ track, disabled, marker, setMarker, settings, update }:
   </>
 }
 
-function TrackWave({ track, view, selected, marker, editable, selectRange, movable, splitMode, playhead, onSplit, onClick, onMarker, onContextMenu,
+function TrackWave({ track, view, selected, marker, language, editable, selectRange, movable, splitMode, playhead, onSplit, onClick, onMarker, onMarkerMenu, onContextMenu,
   constrainTrim, onPreview, onTrim, onDragStart, onDragEnd }: {
   track: Track
   view: TimelineView
   selected: boolean
   marker: string
+  language: Language
   editable: boolean
   selectRange: boolean
   movable: boolean
@@ -1589,6 +1642,7 @@ function TrackWave({ track, view, selected, marker, editable, selectRange, movab
   onSplit: (time: number) => void
   onClick: () => void
   onMarker: (id: string) => void
+  onMarkerMenu: (id: string, anchor: MarkerMenuAnchor) => void
   onContextMenu: (event: MouseEvent<HTMLDivElement>) => void
   constrainTrim: (first: number, last: number, edge?: TrimEdge, allowSnap?: boolean) => TrimRange
   onPreview: (range: TrimRange | null) => void
@@ -1646,14 +1700,14 @@ function TrackWave({ track, view, selected, marker, editable, selectRange, movab
     onPreview(null)
   }
   const markers = useMemo(() => sortedPitchPoints(track.effects.pitchPoints), [track.effects.pitchPoints])
+  const labels = useMemo(() => labelMarkers(markers.map(point => point.id), track.markerLabels), [markers, track.markerLabels])
   const visibleMarkers = visibleLength > 0 ? markers
-    .map((point, index) => ({ point, index }))
-    .filter(({ point }) => point.time >= start - 1e-6 && point.time <= end + 1e-6) : []
+    .filter(point => point.time >= start - 1e-6 && point.time <= end + 1e-6) : []
   const pitchX = (time: number) => clamp((time - start) / (visibleLength || 1), 0, 1)
   const basePitch = track.effects.semitones
   const pitchCurve = visibleLength > 0 ? [
     [0, pitchAt(markers, start, basePitch)],
-    ...visibleMarkers.map(({ point }) => [pitchX(point.time), point.semitones]),
+    ...visibleMarkers.map(point => [pitchX(point.time), point.semitones]),
     [1, pitchAt(markers, end, basePitch)],
   ].map(([x, pitch]) => `${400 * x},${50 - pitch / 12 * 40}`).join(' ') : ''
   const clipLeft = (first - view.start) / view.length * 100
@@ -1719,7 +1773,7 @@ function TrackWave({ track, view, selected, marker, editable, selectRange, movab
       <svg viewBox="0 0 400 100" preserveAspectRatio="none" aria-hidden="true">
         <path d={points}/>
         {fadeShape && <polygon className="mix-fade-shape" points={`0,100 ${fadeShape} 400,100`}/>}
-        {visibleMarkers.map(({ point }) => {
+        {visibleMarkers.map(point => {
           const x = pitchX(point.time) * 400
           return <line key={point.id} className="mix-marker-guide" x1={x} x2={x} y1="0" y2="100"/>
         })}
@@ -1740,16 +1794,18 @@ function TrackWave({ track, view, selected, marker, editable, selectRange, movab
           onTrim(constrainTrim(track.offset + (edge === 'start' ? delta : 0), end + (edge === 'end' ? delta : 0), edge, false))
         }}/>
     })}
-    {visibleMarkers.map(({ point, index }) =>
-      <button key={point.id} className="mix-marker-pin timeline-marker-pin" type="button"
-        aria-label={'选择标记 ' + (index + 1)} aria-pressed={selected && (marker || markers[0]?.id) === point.id}
-        disabled={splitMode}
-        title={`标记 ${index + 1}：${point.time.toFixed(2)} 秒，${point.semitones} 半音`}
-        style={{ left: `clamp(calc(var(--mix-marker-size) / 2 - ${clipLeft}cqw), ${pitchX(point.time) * 100}%, calc(${100 - clipLeft}cqw - var(--mix-marker-size) / 2))` }}
-        onPointerDown={event => event.stopPropagation()}
-        onClick={event => { event.stopPropagation(); onMarker(point.id) }}>
-        {index + 1}
-      </button>)}
+    {visibleMarkers.map(point =>
+      <TimelineMarkerPin key={point.id} className="mix-marker-pin" label={labels.byId[point.id]} language={language}
+        selected={selected && (marker || markers[0]?.id) === point.id}
+        position={`clamp(calc(var(--marker-hit-size) / 2 - ${clipLeft}cqw), ${pitchX(point.time) * 100}%, calc(${100 - clipLeft}cqw - var(--marker-hit-size) / 2))`}
+        onMenu={anchor => onMarkerMenu(point.id, anchor)}
+        onSelect={() => {
+          if (!splitMode) onMarker(point.id)
+          else if (canSplit) {
+            onSplit(track.offset + point.time - track.start)
+            hideSplitGuide()
+          }
+        }}/>)}
     {canSplit && <span ref={splitGuide} className="timeline-split-guide" aria-hidden="true" hidden />}
   </div>
 }

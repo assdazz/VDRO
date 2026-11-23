@@ -3528,7 +3528,7 @@ body.vdro-translucent {
 .pitch-point-list {max-height:180px;overflow:auto;display:flex;flex-direction:column;gap:5px}
 .pitch-point-list>div {display:flex;gap:4px}
 .pitch-point-list button {background:var(--vd-bg);color:var(--vd-text-secondary);border:1px solid var(--vd-border);border-radius:5px;padding:6px;text-align:left}
-.pitch-point-list button:first-child {flex:1}
+.pitch-point-list button:first-child {flex:1;min-width:0;overflow-wrap:anywhere}
 .pitch-point-list button[aria-pressed=true] {color:var(--vd-accent);border-color:var(--vd-accent-border)}
 
 .adjustment-export-actions { display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-left:auto; flex-wrap:wrap; }
@@ -3583,18 +3583,96 @@ body.vdro-translucent {
 
 .resume-draft { margin: 0 .5em .75em 0; }
 
-.timeline-marker-pin {
-  color: var(--vd-bg);
-  background: var(--vd-playhead);
-  border: 1px solid var(--vd-bg);
-  border-radius: 3px;
-  font: 600 calc(var(--vd-font-scale, 1) * 9px) var(--vd-font-mono);
+.timeline-context-menu {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  min-width: min(12em, calc(100vw - 8px));
+  max-width: calc(100vw - 8px);
+  padding: 4px;
+  border: 1px solid var(--vd-border-strong);
+  border-radius: 6px;
+  background: var(--vd-surface-raised);
+  color: var(--vd-text);
+  box-shadow: var(--vd-shadow-popover);
 }
-.timeline-marker-pin[aria-pressed="true"] { background: var(--vd-accent); }
+.timeline-context-menu button {
+  display: grid;
+  grid-template-columns: 1.2em minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  text-align: start;
+}
+.timeline-context-menu button:not(:disabled):is(:hover, :focus-visible) { background: var(--vd-surface-hover); }
+.timeline-context-menu button:disabled { color: var(--vd-text-disabled); }
+.timeline-context-menu svg { width: 1.2em; height: 1.2em; }
+.timeline-context-menu button[aria-checked="true"] svg { color: var(--vd-accent); }
+.timeline-context-menu kbd { color: var(--vd-text-secondary); font: .86em var(--vd-font-mono); }
+
+.timeline-marker-pin {
+  --marker-hit-size: calc(var(--vd-font-scale, 1) * 20px);
+  display: grid;
+  place-items: center;
+  width: var(--marker-hit-size);
+  height: var(--marker-hit-size);
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+}
+.timeline-marker-pin::before {
+  content: "";
+  width: calc(var(--marker-hit-size) * .35);
+  height: calc(var(--marker-hit-size) * .6);
+  background: var(--marker-color);
+}
+.timeline-marker-pin:is(:hover, :focus-visible, [aria-pressed="true"]) {
+  outline: 1px solid var(--vd-text-secondary);
+  outline-offset: -2px;
+}
 .clip-marker-guide {
   position: absolute;
   inset-block: 0;
+  width: 1px;
   border-left: 1px dashed var(--vd-playhead);
+  transform: translateX(-50%);
   pointer-events: none;
   z-index: 3;
 }
+.timeline-marker-dialog {
+  width: min(390px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  padding: 16px;
+  border: 1px solid var(--vd-border-strong);
+  border-radius: var(--vd-radius-md);
+  background: var(--vd-surface-raised);
+  color: var(--vd-text);
+  box-shadow: var(--vd-shadow-popover);
+}
+.timeline-marker-dialog::backdrop { background: #0009; }
+.timeline-marker-dialog form { display: grid; gap: 12px; }
+.timeline-marker-dialog h2 {
+  margin: 0;
+  font-size: calc(var(--vd-font-scale, 1) * 16px);
+}
+.timeline-marker-dialog label { display: grid; gap: 6px; }
+.timeline-marker-dialog input {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--vd-border);
+  border-radius: var(--vd-radius-sm);
+  background: var(--vd-bg);
+  color: var(--vd-text);
+}
+.timeline-marker-dialog .timeline-marker-color-label {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.timeline-marker-dialog input[type="color"] { width: 4em; height: 2em; padding: 2px; cursor: pointer; }
+.timeline-marker-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }

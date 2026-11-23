@@ -1,4 +1,4 @@
-import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, Dispatch, DragEvent, JSX, PointerEvent as ReactPointerEvent, SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import WaveSurfer from 'wavesurfer.js'
@@ -25,6 +25,8 @@ import type { AppPage } from './PageTabs'
 import { VolumeIcon } from './VolumeIcon'
 import { TimelineToolPicker, useTimelineToolShortcuts, type TimelineTool } from './TimelineToolPicker'
 import { TimelineEditControls } from './TimelineEditControls'
+import { TimelineMarkerActions, TimelineMarkerPin, type MarkerMenuAnchor } from './TimelineMarker'
+import { labelMarkers, updateMarkerLabel, type MarkerLabelEdit, type MarkerLabels } from './timelineMarkers'
 import { TimelineSnapButton } from './TimelineSnapButton'
 import { snapTimelineTime } from './timelineSnap'
 import { TimelinePlayheadHandle, type PlayheadDrag } from './TimelinePlayheadHandle'
@@ -94,6 +96,10 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value))
 }
 
+function waveformViewportWidth(wave: WaveSurfer): number {
+  return wave.getWrapper().parentElement?.getBoundingClientRect().width ?? wave.getWidth()
+}
+
 const sameRange = (left: RegionRange, right: RegionRange) => left.start === right.start && left.end === right.end
 
 type ClipProject = { assets: ProjectMediaEntry[]; current?: string; timelines: Record<string, ClipTimeline> }
@@ -111,14 +117,20 @@ function readClipDraft(projectId: string): ClipProject | null {
   }
   return { assets, current: assets.find(item => item.filePath === draft.current)?.id, timelines }
 }
-type ClipTimeline = { range: RegionRange; cuts: number[]; markers: number[] }
+type ClipTimeline = { range: RegionRange; cuts: number[]; markers: number[]; markerLabels?: MarkerLabels }
 const sameClipTimeline = (left: ClipTimeline, right: ClipTimeline) =>
-  left.cuts === right.cuts && left.markers === right.markers && sameRange(left.range, right.range)
+  left.cuts === right.cuts && left.markers === right.markers && left.markerLabels === right.markerLabels &&
+  sameRange(left.range, right.range)
 
 function rangeAtCut(time: number, cuts: number[], duration: number): RegionRange {
   const next = cuts.findIndex(cut => cut > time)
   return next < 0 ? { start: cuts.at(-1) ?? 0, end: duration }
     : { start: cuts[next - 1] ?? 0, end: cuts[next] }
+}
+
+function clipPartToSplit(time: number, cuts: number[], duration: number) {
+  const part = rangeAtCut(time, cuts, duration)
+  return time - part.start >= .02 && part.end - time >= .02 ? part : undefined
 }
 
 function errorMessage(error: unknown): string {
@@ -183,6 +195,8 @@ export default function ClipEditor({
   const splitGuideRef = useRef<HTMLSpanElement>(null)
   const timelineToolRef = useRef<TimelineTool>('select')
   const [selectedMarker, setSelectedMarker] = useState<number | null>(null)
+  const [markerMenu, setMarkerMenu] = useState<{ time: number; anchor: MarkerMenuAnchor } | null>(null)
+  const dismissMarkerMenu = useCallback(() => setMarkerMenu(null), [])
   const [snap, setSnap] = useState(settings.adjustmentSnap)
   useEffect(() => setSnap(settings.adjustmentSnap), [settings.adjustmentSnap])
   const snapOptions = useRef({ enabled: snap, distance: settings.adjustmentSnapDistance })
@@ -210,7 +224,6 @@ export default function ClipEditor({
     cleanup: (() => void) | null
   } | null>(null)
   const suppressLibraryClickRef = useRef(false)
-  const zoomFactorRef = useRef(1)
   const zoomTrackRef = useRef<HTMLDivElement>(null)
   const previewCanvasRef = useRef<HTMLCanvasElement>(null)
   const [nativePreview, setNativePreview] = useState(true)
@@ -252,6 +265,9 @@ export default function ClipEditor({
   const [region, setRegion] = useState<RegionRange>({ start: 0, end: 0 })
   const { present: clipTimeline, past: pastRanges, future: futureRanges, commit: recordTimeline, reset: resetTimeline,
     undo: undoRange, redo: redoRange } = useEditHistory<ClipTimeline>({ range: { start: 0, end: 0 }, cuts: [], markers: [] }, sameClipTimeline)
+  const markerLabels = useMemo(() => labelMarkers(clipTimeline.markers.map(String), clipTimeline.markerLabels),
+    [clipTimeline.markers, clipTimeline.markerLabels])
+  const menuMarker = markerMenu ? markerLabels.byId[String(markerMenu.time)] : undefined
   useEffect(() => {
     if (selectedMarker !== null && !clipTimeline.markers.includes(selectedMarker)) setSelectedMarker(null)
   }, [clipTimeline.markers, selectedMarker])
@@ -279,13 +295,16 @@ export default function ClipEditor({
     togglePanel, beginInspectorResize, beginTimelineResize, beginExtractedResize,
   } = usePanelLayout(settings, settingsLoaded)
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null)
+  useEffect(() => {
+    if (layout.timelineCollapsed || settingsOpen) dismissMarkerMenu()
+  }, [layout.timelineCollapsed, settingsOpen, dismissMarkerMenu])
 
   const changeTimelineTool = useCallback((tool: TimelineTool) => {
     timelineToolRef.current = tool
     setTimelineTool(tool)
     if (splitGuideRef.current) splitGuideRef.current.hidden = true
   }, [])
-  useTimelineToolShortcuts(active && !layout.timelineCollapsed, settings.shortcuts, changeTimelineTool)
+  useTimelineToolShortcuts(active && !layout.timelineCollapsed && !markerMenu, settings.shortcuts, changeTimelineTool)
 
   const hasVideo = Boolean(media && media.info.videoStreams.length > 0)
   const sourceVideo = media?.info.videoStreams[0]
@@ -424,6 +443,21 @@ export default function ClipEditor({
     if (range) recordRange(range)
   }, [applyRegion, recordRange])
 
+  const splitAtTime = useCallback((position: number) => {
+    const wave = waveSurferRef.current
+    if (!wave) return
+    const time = +position.toFixed(6)
+    const timeline = clipTimelineRef.current
+    const part = clipPartToSplit(time, timeline.cuts, wave.getDuration())
+    if (!part) return
+    const range = applyRegion({ start: part.start, end: time })
+    if (!range) return
+    const cuts = [...timeline.cuts, time].sort((a, b) => a - b)
+    recordTimeline({ ...timeline, range, cuts })
+    if (splitGuideRef.current) splitGuideRef.current.hidden = true
+    wave.setTime(time)
+  }, [applyRegion, recordTimeline])
+
   const [unavailableAssets, setUnavailableAssets] = useState<ProjectMediaEntry[]>([])
   const projectCurrent = useRef<string | undefined>(undefined)
   const projectTimelines = useRef<Record<string, ClipTimeline>>({})
@@ -481,6 +515,7 @@ export default function ClipEditor({
   const adoptMedia = useCallback(
     async (next: ImportedMedia): Promise<boolean> => {
       setSelectedMarker(null)
+      dismissMarkerMenu()
       timelineOwner.current = ''
       const request = ++mediaRequest.current
       setLoading(true)
@@ -541,7 +576,7 @@ export default function ClipEditor({
         if (request === mediaRequest.current) setLoading(false)
       }
     },
-    [settings.previewMuted, settings.previewVolume],
+    [settings.previewMuted, settings.previewVolume, dismissMarkerMenu],
   )
 
   useEffect(() => {
@@ -605,9 +640,9 @@ export default function ClipEditor({
     const container = waveRef.current
     if (!media || !peaks || !video || !container) return
 
-    zoomFactorRef.current = 1
     setZoomFactor(1)
     setZoomPxPerSec(0)
+    setZoomViewportWidth(0)
     setZoomScroll(0)
     setZoomMaxScroll(0)
 
@@ -863,19 +898,12 @@ export default function ClipEditor({
     }
     const onSelectBlur = (): void => onSelectCancel()
     const hideSplitGuide = (): void => { if (splitGuide) splitGuide.hidden = true }
-    const splitAtX = (clientX: number) => {
-      if (!regionRef.current) return
-      const time = +timeAtX(clientX).toFixed(6)
-      const part = rangeAtCut(time, clipTimelineRef.current.cuts, waveSurfer.getDuration())
-      if (time - part.start < .02 || part.end - time < .02) return
-      return { time, part }
-    }
     const onSplitHover = (event: PointerEvent): void => {
       if (!splitGuide || timelineToolRef.current !== 'split') return
       if (isPlayheadEvent(event)) { hideSplitGuide(); return }
-      const split = splitAtX(event.clientX)
-      splitGuide.hidden = !split
-      if (split) splitGuide.style.left = `${wrapper.getBoundingClientRect().left + split.time * pxPerSecond() - container.getBoundingClientRect().left}px`
+      const time = +timeAtX(event.clientX).toFixed(6)
+      splitGuide.hidden = !regionRef.current || !clipPartToSplit(time, clipTimelineRef.current.cuts, waveSurfer.getDuration())
+      if (!splitGuide.hidden) splitGuide.style.left = `${wrapper.getBoundingClientRect().left + time * pxPerSecond() - container.getBoundingClientRect().left}px`
     }
     const onSelectClickCapture = (event: MouseEvent): void => {
       if (isPlayheadEvent(event)) {
@@ -884,16 +912,7 @@ export default function ClipEditor({
       } else if (timelineToolRef.current === 'split') {
         event.stopPropagation()
         event.preventDefault()
-        const split = splitAtX(event.clientX)
-        if (!split) return
-        const { time, part } = split
-        const range = applyRegion({ start: part.start, end: time })
-        if (!range) return
-        const timeline = clipTimelineRef.current
-        const cuts = [...timeline.cuts, time].sort((a, b) => a - b)
-        recordTimeline({ ...timeline, range, cuts })
-        hideSplitGuide()
-        waveSurfer.setTime(time)
+        splitAtTime(timeAtX(event.clientX))
       } else if (Date.now() <= suppressClickUntil) {
         event.stopPropagation()
         event.preventDefault()
@@ -920,6 +939,20 @@ export default function ClipEditor({
     container.addEventListener('pointermove', onSplitHover, true)
     container.addEventListener('pointerleave', hideSplitGuide)
 
+    const syncWaveformViewport = () => {
+      const width = waveformViewportWidth(waveSurfer)
+      const duration = waveSurfer.getDuration()
+      if (width <= 0 || !Number.isFinite(duration) || duration <= 0) return
+      // The rendered width can differ from the requested zoom after rounding.
+      const waveformWidth = wrapper.getBoundingClientRect().width
+      setZoomPxPerSec(waveformWidth / duration)
+      setZoomViewportWidth(width)
+      setZoomMaxScroll(Math.max(0, waveformWidth - width))
+      setZoomScroll(waveSurfer.getScroll())
+    }
+    waveSurfer.on('redraw', syncWaveformViewport)
+    video.addEventListener('durationchange', syncWaveformViewport)
+
     waveSurfer.on('ready', () => {
       const saved = projectTimelines.current[projectMediaId(media)]
       if (regions.getRegions().length === 0) {
@@ -937,42 +970,19 @@ export default function ClipEditor({
       timelineOwner.current = projectMediaId(media)
       resetTimeline(saved ?? { range: regionRangeRef.current, cuts: [], markers: [] })
 
-      const width = waveSurfer.getWidth()
-      const fitPxPerSec = peaks.duration > 0 ? width / peaks.duration : 0
-      zoomFactorRef.current = 1
-      setZoomFactor(1)
-      setZoomPxPerSec(fitPxPerSec)
-      setZoomViewportWidth(width)
-      setZoomScroll(0)
-      setZoomMaxScroll(0)
+      syncWaveformViewport()
     })
 
-    const handleScroll = (
-      _visibleStart: number,
-      _visibleEnd: number,
-      scrollLeft: number,
-    ): void => {
+    waveSurfer.on('scroll', () => {
       hideSplitGuide()
-      setZoomScroll(scrollLeft)
-    }
-    waveSurfer.on('scroll', handleScroll)
+      setZoomScroll(waveSurfer.getScroll())
+    })
 
     waveSurfer.on('error', (cause) => setError(errorMessage(cause)))
 
     const resizeObserver = new ResizeObserver(() => {
       const height = Math.max(60, Math.floor(container.clientHeight))
       waveSurfer.setOptions({ height })
-
-      const width = container.clientWidth
-      setZoomViewportWidth(width)
-      if (zoomFactorRef.current <= 1.01 && peaks.duration > 0) {
-        const fitPxPerSec = width / peaks.duration
-        waveSurfer.zoom(fitPxPerSec)
-        waveSurfer.setScroll(0)
-        setZoomPxPerSec(fitPxPerSec)
-        setZoomScroll(0)
-        setZoomMaxScroll(0)
-      }
     })
     resizeObserver.observe(container)
 
@@ -990,6 +1000,7 @@ export default function ClipEditor({
       container.removeEventListener('click', onSelectClickCapture, true)
       container.removeEventListener('pointermove', onSplitHover, true)
       container.removeEventListener('pointerleave', hideSplitGuide)
+      video.removeEventListener('durationchange', syncWaveformViewport)
       hideSplitGuide()
       resizeObserver.disconnect()
       waveSurfer.destroy()
@@ -997,7 +1008,7 @@ export default function ClipEditor({
       waveSurferRef.current = null
       regionRef.current = null
     }
-  }, [media, peaks, syncRegion, applyRegion, editRegion, recordRange, recordTimeline, resetTimeline, snapClipTime])
+  }, [media, peaks, syncRegion, applyRegion, editRegion, recordRange, resetTimeline, snapClipTime, splitAtTime])
 
   useEffect(() => {
     if (!previewing) return
@@ -1086,59 +1097,37 @@ export default function ClipEditor({
       if (!wave || !peaks) return
 
       const duration = wave.getDuration() || peaks.duration
-      const width = wave.getWidth()
-      if (duration <= 0 || width <= 0) return
+      const width = waveformViewportWidth(wave)
+      const wrapper = wave.getWrapper()
+      const waveformWidth = wrapper.getBoundingClientRect().width
+      if (duration <= 0 || width <= 0 || waveformWidth <= 0) return
 
-      const fitPxPerSec = width / duration
       const factor = clamp(nextFactor, 1, 32)
-      const nextPxPerSec = fitPxPerSec * factor
-      const currentPxPerSec = zoomPxPerSec > 0 ? zoomPxPerSec : fitPxPerSec
-      const centerTime = (wave.getScroll() + width / 2) / currentPxPerSec
+      const center = (wave.getScroll() + width / 2) / waveformWidth
+      wave.zoom(width * factor / duration)
+      wave.setScroll(center * wrapper.getBoundingClientRect().width - width / 2)
 
-      wave.zoom(nextPxPerSec)
-      const maxScroll = Math.max(0, duration * nextPxPerSec - width)
-      const nextScroll = clamp(centerTime * nextPxPerSec - width / 2, 0, maxScroll)
-
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          wave.setScroll(nextScroll)
-          setZoomScroll(nextScroll)
-        })
-      })
-
-      zoomFactorRef.current = factor
+      setZoomScroll(wave.getScroll())
       setZoomFactor(factor)
-      setZoomPxPerSec(nextPxPerSec)
-      setZoomViewportWidth(width)
-      setZoomMaxScroll(maxScroll)
     },
-    [peaks, zoomPxPerSec],
+    [peaks],
   )
 
   const resetZoom = useCallback((): void => {
     const wave = waveSurferRef.current
     if (!wave || !peaks) return
 
-    const duration = wave.getDuration() || peaks.duration
-    const width = wave.getWidth()
-    if (duration <= 0 || width <= 0) return
-
-    const fitPxPerSec = width / duration
-    wave.zoom(fitPxPerSec)
+    wave.zoom(0)
     wave.setScroll(0)
-    zoomFactorRef.current = 1
     setZoomFactor(1)
-    setZoomPxPerSec(fitPxPerSec)
-    setZoomViewportWidth(width)
-    setZoomScroll(0)
-    setZoomMaxScroll(0)
+    setZoomScroll(wave.getScroll())
   }, [peaks])
 
   const handleZoomScroll = useCallback((value: number): void => {
     const wave = waveSurferRef.current
     if (!wave) return
     wave.setScroll(value)
-    setZoomScroll(value)
+    setZoomScroll(wave.getScroll())
   }, [])
 
   const beginZoomPan = useCallback(
@@ -1233,7 +1222,7 @@ export default function ClipEditor({
     if (!fullDuration || !width) return
     const secondsPerPixel = fullDuration / width
     const first = wave.getScroll() * secondsPerPixel
-    const last = Math.min(fullDuration, first + wave.getWidth() * secondsPerPixel)
+    const last = Math.min(fullDuration, first + waveformViewportWidth(wave) * secondsPerPixel)
     const origin = video.currentTime
     const resume = !video.paused && !extractedPlaybackRef.current
     stopExtractedPlayback()
@@ -1283,7 +1272,8 @@ export default function ClipEditor({
     editRegion({ start: current.start, end })
   }, [duration, editRegion])
 
-  useTimelineHistoryShortcuts(active && !loading && !extracting && !settingsOpen, () => restoreRegion(undoRange), () => restoreRegion(redoRange))
+  useTimelineHistoryShortcuts(active && !loading && !extracting && !settingsOpen && !markerMenu,
+    () => restoreRegion(undoRange), () => restoreRegion(redoRange))
 
   function restoreRegion(restore: () => ClipTimeline | undefined) {
     if (!regionRef.current || loading || extracting) return
@@ -1309,7 +1299,19 @@ export default function ClipEditor({
     setSelectedMarker(existing ?? time)
     if (existing !== undefined) return
     const markers = [...clipTimeline.markers, time].sort((left, right) => left - right)
-    recordTimeline({ ...clipTimeline, markers })
+    recordTimeline({ ...clipTimeline, markers, markerLabels: labelMarkers(markers.map(String), markerLabels) })
+  }
+
+  function deleteTimelineMarker(time: number) {
+    if (!canEditTimeline || !clipTimeline.markers.includes(time)) return
+    const markers = clipTimeline.markers.filter(value => value !== time)
+    recordTimeline({ ...clipTimeline, markers, markerLabels: labelMarkers(markers.map(String), markerLabels) })
+  }
+
+  function editTimelineMarker(time: number, edit: MarkerLabelEdit) {
+    if (!canEditTimeline || !clipTimeline.markers.includes(time)) return
+    const next = updateMarkerLabel(markerLabels, String(time), edit)
+    if (next !== markerLabels) recordTimeline({ ...clipTimeline, markerLabels: next })
   }
 
   const handlePreviewStageClick = useCallback((): void => {
@@ -2217,7 +2219,7 @@ export default function ClipEditor({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (!active || settingsOpen) return
+      if (!active || settingsOpen || markerMenu) return
       const target = event.target as HTMLElement | null
       if (target && ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(target.tagName)) {
         return
@@ -2259,6 +2261,7 @@ export default function ClipEditor({
     settings.skipSeconds,
     settings.customSkipSeconds,
     settingsOpen,
+    markerMenu,
     active,
   ])
 
@@ -2273,11 +2276,12 @@ export default function ClipEditor({
 
   useEffect(() => {
     if (active) return
+    dismissMarkerMenu()
     extractedAction.current++
     videoRef.current?.pause()
     stopExtractedPlayback()
     setPreviewing(false)
-  }, [active, stopExtractedPlayback])
+  }, [active, stopExtractedPlayback, dismissMarkerMenu])
   return (
     <div
       inert={!!projectId && !workspaceReady}
@@ -2646,19 +2650,24 @@ export default function ClipEditor({
               {peaks && visibleDuration > 0 && clipTimeline.cuts.filter(time => time >= visibleStartTime && time <= visibleEndTime)
                 .map(time => <span key={time} className="timeline-cut-line" aria-hidden="true"
                   style={{ left: `${(time - visibleStartTime) / visibleDuration * 100}%` }} />)}
-              {peaks && !layout.timelineCollapsed && visibleDuration > 0 && clipTimeline.markers.map((time, index) =>
-                time >= visibleStartTime && time <= visibleEndTime && <Fragment key={time}>
-                  <span className="clip-marker-guide" aria-hidden="true"
-                    style={{ left: (time - visibleStartTime) / visibleDuration * 100 + '%' }}/>
-                  <button type="button" className="clip-marker-pin timeline-marker-pin"
-                  aria-pressed={selectedMarker === time} disabled={timelineTool === 'split'} aria-label={`定位标记 ${index + 1}`}
-                  title={`标记 ${index + 1}：${formatTime(time)}`}
-                  style={{ '--clip-marker-position': `${(time - visibleStartTime) / visibleDuration * 100}%` } as CSSProperties}
-                  onClick={() => {
-                    setActiveExtractedClip(null)
-                    setSelectedMarker(time)
-                    seekTo(time)
-                  }}>{index + 1}</button></Fragment>)}
+              {peaks && !layout.timelineCollapsed && visibleDuration > 0 && clipTimeline.markers.map(time => {
+                if (time < visibleStartTime || time > visibleEndTime) return null
+                const position = `${(time - visibleStartTime) / visibleDuration * 100}%`
+                const overlapsPlayhead = waveCursor !== null && !playing && zoomPxPerSec > 0 &&
+                  Math.abs(time - currentTime) * zoomPxPerSec <= .5
+                return <Fragment key={time}>
+                  <span className="clip-marker-guide" aria-hidden="true" hidden={overlapsPlayhead} style={{ left: position }} />
+                  <TimelineMarkerPin className="clip-marker-pin" label={markerLabels.byId[String(time)]} language={settings.language}
+                    selected={selectedMarker === time} position={position}
+                    onMenu={anchor => setMarkerMenu({ time, anchor })}
+                    onSelect={() => {
+                      if (timelineTool === 'split') { splitAtTime(time); return }
+                      setActiveExtractedClip(null)
+                      setSelectedMarker(time)
+                      seekTo(time)
+                    }}/>
+                </Fragment>
+              })}
               {media && !peaks && !loading && (
                 <div className="waveform-status">波形尚未生成</div>
               )}
@@ -3106,6 +3115,11 @@ export default function ClipEditor({
           </button>
         </div>
       )}
+
+      {active && markerMenu && menuMarker && !layout.timelineCollapsed && !settingsOpen &&
+        <TimelineMarkerActions key={markerMenu.time} anchor={markerMenu.anchor} label={menuMarker}
+          language={settings.language} disabled={!canEditTimeline} onDismiss={dismissMarkerMenu}
+          onDelete={() => deleteTimelineMarker(markerMenu.time)} onSave={edit => editTimelineMarker(markerMenu.time, edit)}/>}
 
       {settingsOpen && createPortal(
         <Suspense fallback={null}>

@@ -120,24 +120,24 @@
   min-height: 60px;
   border: 1px solid var(--vd-border);
   border-radius: 4px;
+  overflow: clip;
   background: repeating-linear-gradient(to right, var(--vd-border-subtle) 0 1px, transparent 1px 25%) var(--vd-bg);
 }
 .clip-app .waveform { min-height: 60px; }
+.clip-app .waveform ::part(cursor) {
+  /* WaveSurfer shifts its cursor progressively to keep it inside the waveform. */
+  transform: translateX(-50%) !important;
+}
 .clip-app [data-range-selected="false"] .waveform ::part(region) { opacity: 0 !important; pointer-events: none !important; }
 .clip-app [data-timeline-tool="split"] .waveform ::part(region),
 .clip-app [data-timeline-tool="split"] .waveform ::part(region-handle) { pointer-events: none !important; }
 .clip-marker-pin {
-  --clip-marker-size: calc(var(--vd-font-scale, 1) * 21px);
   position: absolute;
   inset-block-start: 20px;
   z-index: 10;
-  left: clamp(calc(var(--clip-marker-size) / 2), var(--clip-marker-position), calc(100% - var(--clip-marker-size) / 2));
+  left: var(--marker-position);
   transform: translateX(-50%);
-  min-width: var(--clip-marker-size);
-  min-height: calc(var(--vd-font-scale, 1) * 16px);
-  padding: 0 2px;
 }
-.clip-app [data-timeline-tool="split"] .clip-marker-pin { pointer-events: none; }
 .clip-app .timeline-editor .timeline-transport {
   flex: 0 0 auto;
   display: flex;

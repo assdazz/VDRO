@@ -23,15 +23,7 @@ export function useMediaPreview({ media, hasVideo, videoRef, previewCanvasRef, e
       }
     }
     const onTimeUpdate = (): void => {
-      const mediaDuration =
-        Number.isFinite(video.duration) && video.duration > 0
-          ? video.duration
-          : 0
-      setCurrentTime(
-        mediaDuration > 0 && video.currentTime >= mediaDuration - 0.03
-          ? mediaDuration
-          : video.currentTime,
-      )
+      setCurrentTime(video.ended && Number.isFinite(video.duration) ? video.duration : video.currentTime)
     }
     const onPlay = (): void => {
       if (extractedPlaybackRef.current) {
